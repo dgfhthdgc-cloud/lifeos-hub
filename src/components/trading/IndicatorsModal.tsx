@@ -94,6 +94,34 @@ export const IndicatorsModal: React.FC<IndicatorsModalProps> = ({
       color: '#10b981', // emerald-500
       category: 'Volume',
     },
+    {
+      key: 'marketStructure',
+      name: 'Market Structure (BOS & CHoCH)',
+      description: 'Automatic swing breaks: Break of Structure (BOS) & Change of Character (CHoCH)',
+      color: '#06b6d4', // cyan-500
+      category: 'Overlay',
+    },
+    {
+      key: 'orderBlocks',
+      name: 'Order Blocks (OB)',
+      description: 'Institutional mitigation zones and high-volume baseline blocks',
+      color: '#f59e0b', // amber-500
+      category: 'Overlay',
+    },
+    {
+      key: 'fairValueGaps',
+      name: 'Fair Value Gaps (FVG)',
+      description: '3-candle price imbalances and liquidity voids with mitigation status',
+      color: '#ec4899', // pink-500
+      category: 'Overlay',
+    },
+    {
+      key: 'liquidityLevels',
+      name: 'Liquidity Pools (BSL / SSL)',
+      description: 'Equal Highs (Buy-Side Liquidity) and Equal Lows (Sell-Side Liquidity)',
+      color: '#8b5cf6', // violet-500
+      category: 'Overlay',
+    },
   ];
 
   return (

@@ -6,6 +6,10 @@ import {
   TradeJournalEntry,
   ActiveOrder,
   TradingAccount,
+  MarketStructureBreak,
+  FairValueGap,
+  OrderBlock,
+  LiquidityLevel,
 } from '../types';
 
 export const INITIAL_MARKET_SYMBOLS: MarketSymbol[] = [
@@ -513,6 +517,234 @@ export function toHeikinAshi(candles: CandleStick[]): CandleStick[] {
     });
   }
   return haCandles;
+}
+
+// -------------------------------------------------------------
+// MARKET STRUCTURE & TECHNICAL ANALYSIS ALGORITHMS
+// -------------------------------------------------------------
+
+export function detectMarketStructure(candles: CandleStick[]): MarketStructureBreak[] {
+  if (candles.length < 10) return [];
+  const breaks: MarketStructureBreak[] = [];
+  const swingLookback = 3;
+
+  // Find swing highs and lows
+  const swingHighs: { index: number; price: number; time: number }[] = [];
+  const swingLows: { index: number; price: number; time: number }[] = [];
+
+  for (let i = swingLookback; i < candles.length - swingLookback; i++) {
+    const currentHigh = candles[i].high;
+    const currentLow = candles[i].low;
+    let isSwingHigh = true;
+    let isSwingLow = true;
+
+    for (let j = 1; j <= swingLookback; j++) {
+      if (candles[i - j].high >= currentHigh || candles[i + j].high > currentHigh) {
+        isSwingHigh = false;
+      }
+      if (candles[i - j].low <= currentLow || candles[i + j].low < currentLow) {
+        isSwingLow = false;
+      }
+    }
+
+    if (isSwingHigh) {
+      swingHighs.push({ index: i, price: currentHigh, time: candles[i].time });
+    }
+    if (isSwingLow) {
+      swingLows.push({ index: i, price: currentLow, time: candles[i].time });
+    }
+  }
+
+  // Detect BOS and CHoCH from consecutive structure breaks
+  let currentTrend: 'bullish' | 'bearish' | 'neutral' = 'neutral';
+  let lastBrokenHighIdx = -1;
+  let lastBrokenLowIdx = -1;
+
+  for (let i = 0; i < candles.length; i++) {
+    const candle = candles[i];
+
+    // Check if candle closes above recent swing high
+    const relevantHighs = swingHighs.filter((sh) => sh.index < i && sh.index > lastBrokenHighIdx);
+    if (relevantHighs.length > 0) {
+      const recentHigh = relevantHighs[relevantHighs.length - 1];
+      if (candle.close > recentHigh.price) {
+        const isChoch = currentTrend === 'bearish';
+        breaks.push({
+          type: isChoch ? 'CHoCH' : 'BOS',
+          direction: 'bullish',
+          price: recentHigh.price,
+          time: candle.time,
+          candleIndex: i,
+          brokenLevelIndex: recentHigh.index,
+        });
+        currentTrend = 'bullish';
+        lastBrokenHighIdx = recentHigh.index;
+      }
+    }
+
+    // Check if candle closes below recent swing low
+    const relevantLows = swingLows.filter((sl) => sl.index < i && sl.index > lastBrokenLowIdx);
+    if (relevantLows.length > 0) {
+      const recentLow = relevantLows[relevantLows.length - 1];
+      if (candle.close < recentLow.price) {
+        const isChoch = currentTrend === 'bullish';
+        breaks.push({
+          type: isChoch ? 'CHoCH' : 'BOS',
+          direction: 'bearish',
+          price: recentLow.price,
+          time: candle.time,
+          candleIndex: i,
+          brokenLevelIndex: recentLow.index,
+        });
+        currentTrend = 'bearish';
+        lastBrokenLowIdx = recentLow.index;
+      }
+    }
+  }
+
+  return breaks;
+}
+
+export function detectFairValueGaps(candles: CandleStick[]): FairValueGap[] {
+  if (candles.length < 3) return [];
+  const gaps: FairValueGap[] = [];
+
+  for (let i = 2; i < candles.length; i++) {
+    const c1 = candles[i - 2];
+    const c2 = candles[i - 1];
+    const c3 = candles[i];
+
+    // Bullish FVG: Candle 1 High < Candle 3 Low with strong green Candle 2
+    if (c1.high < c3.low && c2.close > c2.open) {
+      let mitigated = false;
+      for (let k = i + 1; k < candles.length; k++) {
+        if (candles[k].low <= c1.high) {
+          mitigated = true;
+          break;
+        }
+      }
+      gaps.push({
+        direction: 'bullish',
+        top: c3.low,
+        bottom: c1.high,
+        time: c2.time,
+        startIndex: i - 1,
+        mitigated,
+      });
+    }
+
+    // Bearish FVG: Candle 1 Low > Candle 3 High with strong red Candle 2
+    if (c1.low > c3.high && c2.close < c2.open) {
+      let mitigated = false;
+      for (let k = i + 1; k < candles.length; k++) {
+        if (candles[k].high >= c1.low) {
+          mitigated = true;
+          break;
+        }
+      }
+      gaps.push({
+        direction: 'bearish',
+        top: c1.low,
+        bottom: c3.high,
+        time: c2.time,
+        startIndex: i - 1,
+        mitigated,
+      });
+    }
+  }
+
+  return gaps;
+}
+
+export function detectOrderBlocks(candles: CandleStick[]): OrderBlock[] {
+  if (candles.length < 5) return [];
+  const orderBlocks: OrderBlock[] = [];
+
+  for (let i = 1; i < candles.length - 2; i++) {
+    const cPrev = candles[i];
+    const cNext1 = candles[i + 1];
+    const cNext2 = candles[i + 2];
+
+    const bodySize = Math.abs(cPrev.close - cPrev.open);
+    const impulsiveBull = cNext1.close > cNext1.open && (cNext1.close - cNext1.open) > bodySize * 1.5;
+    const impulsiveBear = cNext1.close < cNext1.open && (cNext1.open - cNext1.close) > bodySize * 1.5;
+
+    // Bullish Order Block (last down-close candle before impulsive up-move)
+    if (cPrev.close < cPrev.open && (impulsiveBull || cNext2.close > cPrev.high)) {
+      let mitigated = false;
+      for (let k = i + 2; k < candles.length; k++) {
+        if (candles[k].low < cPrev.low) {
+          mitigated = true;
+          break;
+        }
+      }
+      orderBlocks.push({
+        direction: 'bullish',
+        top: Math.max(cPrev.open, cPrev.close),
+        bottom: cPrev.low,
+        time: cPrev.time,
+        candleIndex: i,
+        mitigated,
+      });
+    }
+
+    // Bearish Order Block (last up-close candle before impulsive down-move)
+    if (cPrev.close > cPrev.open && (impulsiveBear || cNext2.close < cPrev.low)) {
+      let mitigated = false;
+      for (let k = i + 2; k < candles.length; k++) {
+        if (candles[k].high > cPrev.high) {
+          mitigated = true;
+          break;
+        }
+      }
+      orderBlocks.push({
+        direction: 'bearish',
+        top: cPrev.high,
+        bottom: Math.min(cPrev.open, cPrev.close),
+        time: cPrev.time,
+        candleIndex: i,
+        mitigated,
+      });
+    }
+  }
+
+  return orderBlocks;
+}
+
+export function detectLiquidityLevels(candles: CandleStick[]): LiquidityLevel[] {
+  if (candles.length < 15) return [];
+  const levels: LiquidityLevel[] = [];
+  const tolerance = 0.0015; // 0.15% threshold for equal highs/lows
+
+  for (let i = 3; i < candles.length - 3; i++) {
+    for (let j = i + 4; j < Math.min(i + 25, candles.length); j++) {
+      const h1 = candles[i].high;
+      const h2 = candles[j].high;
+      if (Math.abs(h1 - h2) / h1 <= tolerance) {
+        levels.push({
+          type: 'BSL',
+          price: Math.max(h1, h2),
+          startIndex: i,
+          time: candles[i].time,
+          label: 'BSL (Buy-Side Liquidity)',
+        });
+      }
+
+      const l1 = candles[i].low;
+      const l2 = candles[j].low;
+      if (Math.abs(l1 - l2) / l1 <= tolerance) {
+        levels.push({
+          type: 'SSL',
+          price: Math.min(l1, l2),
+          startIndex: i,
+          time: candles[i].time,
+          label: 'SSL (Sell-Side Liquidity)',
+        });
+      }
+    }
+  }
+
+  return levels;
 }
 
 // -------------------------------------------------------------

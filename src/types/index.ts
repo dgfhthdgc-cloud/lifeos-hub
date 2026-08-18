@@ -626,6 +626,41 @@ export interface ChartDrawing {
   riskRewardRatio?: number;
 }
 
+export interface MarketStructureBreak {
+  type: 'BOS' | 'CHoCH';
+  direction: 'bullish' | 'bearish';
+  price: number;
+  time: number;
+  candleIndex: number;
+  brokenLevelIndex: number;
+}
+
+export interface FairValueGap {
+  direction: 'bullish' | 'bearish';
+  top: number;
+  bottom: number;
+  time: number;
+  startIndex: number;
+  mitigated: boolean;
+}
+
+export interface OrderBlock {
+  direction: 'bullish' | 'bearish';
+  top: number;
+  bottom: number;
+  time: number;
+  candleIndex: number;
+  mitigated: boolean;
+}
+
+export interface LiquidityLevel {
+  type: 'BSL' | 'SSL';
+  price: number;
+  startIndex: number;
+  time: number;
+  label: string;
+}
+
 export interface IndicatorConfig {
   ema9: boolean;
   ema21: boolean;
@@ -636,12 +671,20 @@ export interface IndicatorConfig {
   rsi: boolean;
   macd: boolean;
   volume: boolean;
+  marketStructure?: boolean;
+  orderBlocks?: boolean;
+  fairValueGaps?: boolean;
+  liquidityLevels?: boolean;
 }
+
+export type OrderType = 'market' | 'limit';
 
 export interface ActiveOrder {
   id: string;
   symbol: string;
   direction: 'long' | 'short';
+  orderType?: OrderType;
+  limitPrice?: number;
   size: number; // contracts or lots
   entryPrice: number;
   stopLoss?: number;

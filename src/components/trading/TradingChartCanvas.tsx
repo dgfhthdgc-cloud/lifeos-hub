@@ -16,6 +16,10 @@ import {
   calculateRSI,
   calculateMACD,
   toHeikinAshi,
+  detectMarketStructure,
+  detectFairValueGaps,
+  detectOrderBlocks,
+  detectLiquidityLevels,
 } from '../../lib/tradingData';
 import { useTheme } from '../../context/ThemeContext';
 import {
@@ -190,6 +194,10 @@ export const TradingChartCanvas: React.FC<TradingChartCanvasProps> = ({
       vwap: indicators.vwap ? calculateVWAP(candles) : [],
       rsi: indicators.rsi ? calculateRSI(candles, 14) : [],
       macd: indicators.macd ? calculateMACD(candles, 12, 26, 9) : null,
+      marketStructure: indicators.marketStructure ? detectMarketStructure(candles) : [],
+      fairValueGaps: indicators.fairValueGaps ? detectFairValueGaps(candles) : [],
+      orderBlocks: indicators.orderBlocks ? detectOrderBlocks(candles) : [],
+      liquidityLevels: indicators.liquidityLevels ? detectLiquidityLevels(candles) : [],
     };
   }, [candles, indicators]);
 
@@ -454,6 +462,138 @@ export const TradingChartCanvas: React.FC<TradingChartCanvasProps> = ({
     if (indicators.ema50) drawIndicatorLine(indicatorData.ema50, '#a855f7', 1.5);
     if (indicators.ema200) drawIndicatorLine(indicatorData.ema200, isDark ? '#f1f5f9' : '#334155', 2);
     if (indicators.vwap) drawIndicatorLine(indicatorData.vwap, '#facc15', 1.5);
+
+    // 5.1 Fair Value Gaps (FVG)
+    if (indicators.fairValueGaps && indicatorData.fairValueGaps) {
+      indicatorData.fairValueGaps.forEach((fvg) => {
+        const startVisibleIdx = fvg.startIndex - startIndex;
+        if (startVisibleIdx + 15 < 0 || startVisibleIdx > visibleCandles.length + 5) return;
+
+        const xStart = getXCoord(Math.max(0, startVisibleIdx), width);
+        const xEnd = Math.min(width - 70, xStart + ((width - 70) / visibleCount) * 12);
+        const yTop = getYCoord(fvg.top, mainHeight);
+        const yBottom = getYCoord(fvg.bottom, mainHeight);
+        const height = Math.abs(yBottom - yTop);
+        const topY = Math.min(yTop, yBottom);
+
+        ctx.fillStyle =
+          fvg.direction === 'bullish'
+            ? isDark
+              ? 'rgba(16, 185, 129, 0.18)'
+              : 'rgba(16, 185, 129, 0.15)'
+            : isDark
+            ? 'rgba(244, 63, 94, 0.18)'
+            : 'rgba(244, 63, 94, 0.15)';
+        ctx.fillRect(xStart, topY, xEnd - xStart, height);
+
+        ctx.strokeStyle = fvg.direction === 'bullish' ? '#10b981' : '#f43f5e';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([2, 2]);
+        ctx.strokeRect(xStart, topY, xEnd - xStart, height);
+        ctx.setLineDash([]);
+
+        ctx.fillStyle = fvg.direction === 'bullish' ? '#10b981' : '#f43f5e';
+        ctx.font = '8px monospace';
+        ctx.fillText(
+          `${fvg.direction === 'bullish' ? '+FVG' : '-FVG'} ${fvg.mitigated ? '(Mit)' : ''}`,
+          xStart + 3,
+          topY + 9
+        );
+      });
+    }
+
+    // 5.2 Order Blocks (OB)
+    if (indicators.orderBlocks && indicatorData.orderBlocks) {
+      indicatorData.orderBlocks.forEach((ob) => {
+        const startVisibleIdx = ob.candleIndex - startIndex;
+        if (startVisibleIdx + 20 < 0 || startVisibleIdx > visibleCandles.length + 5) return;
+
+        const xStart = getXCoord(Math.max(0, startVisibleIdx), width);
+        const xEnd = Math.min(width - 70, xStart + ((width - 70) / visibleCount) * 16);
+        const yTop = getYCoord(ob.top, mainHeight);
+        const yBottom = getYCoord(ob.bottom, mainHeight);
+        const height = Math.abs(yBottom - yTop);
+        const topY = Math.min(yTop, yBottom);
+
+        ctx.fillStyle =
+          ob.direction === 'bullish'
+            ? isDark
+              ? 'rgba(245, 158, 11, 0.16)'
+              : 'rgba(245, 158, 11, 0.14)'
+            : isDark
+            ? 'rgba(168, 85, 247, 0.16)'
+            : 'rgba(168, 85, 247, 0.14)';
+        ctx.fillRect(xStart, topY, xEnd - xStart, height);
+
+        ctx.strokeStyle = ob.direction === 'bullish' ? '#f59e0b' : '#a855f7';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(xStart, topY, xEnd - xStart, height);
+
+        ctx.fillStyle = ob.direction === 'bullish' ? '#f59e0b' : '#a855f7';
+        ctx.font = '8px monospace';
+        ctx.fillText(`${ob.direction === 'bullish' ? '+OB' : '-OB'} Zone`, xStart + 4, topY + 9);
+      });
+    }
+
+    // 5.3 Liquidity Pools (BSL / SSL)
+    if (indicators.liquidityLevels && indicatorData.liquidityLevels) {
+      indicatorData.liquidityLevels.forEach((liq) => {
+        const startVisibleIdx = liq.startIndex - startIndex;
+        if (startVisibleIdx > visibleCandles.length + 5) return;
+
+        const xStart = getXCoord(Math.max(0, startVisibleIdx), width);
+        const y = getYCoord(liq.price, mainHeight);
+
+        ctx.strokeStyle = liq.type === 'BSL' ? '#06b6d4' : '#ec4899';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 2]);
+        ctx.beginPath();
+        ctx.moveTo(xStart, y);
+        ctx.lineTo(width - 70, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Tag label
+        ctx.fillStyle = liq.type === 'BSL' ? '#06b6d4' : '#ec4899';
+        ctx.font = 'bold 8px monospace';
+        ctx.fillText(`$$$ ${liq.label}`, Math.max(xStart + 6, 8), y - 3);
+      });
+    }
+
+    // 5.4 Market Structure Breaks (BOS / CHoCH)
+    if (indicators.marketStructure && indicatorData.marketStructure) {
+      indicatorData.marketStructure.forEach((msb) => {
+        const startVisibleIdx = msb.brokenLevelIndex - startIndex;
+        const endVisibleIdx = msb.candleIndex - startIndex;
+
+        if (endVisibleIdx < 0 || startVisibleIdx > visibleCandles.length) return;
+
+        const xStart = getXCoord(Math.max(0, startVisibleIdx), width);
+        const xEnd = getXCoord(Math.min(visibleCandles.length - 1, endVisibleIdx), width);
+        const y = getYCoord(msb.price, mainHeight);
+
+        const color =
+          msb.type === 'CHoCH'
+            ? '#eab308' // yellow for CHoCH
+            : msb.direction === 'bullish'
+            ? '#10b981'
+            : '#f43f5e';
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(xStart, y);
+        ctx.lineTo(xEnd, y);
+        ctx.stroke();
+
+        // Marker tag at break point
+        ctx.fillStyle = color;
+        ctx.fillRect(xEnd - 4, y - 4, 8, 8);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 8px monospace';
+        ctx.fillText(`${msb.type} (${msb.direction})`, xStart + 4, y - 3);
+      });
+    }
 
     // 6. Candlesticks / Line Chart
     const candleWidth = (width - 70) / visibleCount;
