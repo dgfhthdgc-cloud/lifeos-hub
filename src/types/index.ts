@@ -117,10 +117,13 @@ export interface GoalItem {
   id: string;
   title: string;
   description: string;
-  category: 'Career & Skills' | 'Financial Mastery' | 'Language & Culture' | 'Health & Vitality' | 'Personal';
-  deadline: string; // e.g. "Dec 2026"
-  priority: 'low' | 'medium' | 'high';
-  status: 'in_progress' | 'achieved' | 'on_hold';
+  category: 'Career & Skills' | 'Financial Mastery' | 'Language & Culture' | 'Health & Vitality' | 'Personal' | string;
+  deadline?: string; // e.g. "Dec 2026"
+  quarter?: string; // e.g. "Q3 2026"
+  targetMetric?: string;
+  priority?: 'low' | 'medium' | 'high';
+  status?: 'in_progress' | 'achieved' | 'on_hold';
+  completed?: boolean;
   progress: number; // 0 to 100
   milestones: GoalMilestone[];
   relatedHabitIds?: string[];
@@ -270,6 +273,7 @@ export interface StreakSystemData {
 }
 
 export type XpCategory =
+  | 'general'
   | 'task'
   | 'habit'
   | 'quest'

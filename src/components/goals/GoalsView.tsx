@@ -41,8 +41,9 @@ export function GoalsView() {
     e.preventDefault();
     if (!newTitle.trim()) return;
 
+    const goalId = `goal-${Date.now()}`;
     const newGoal: GoalItem = {
-      id: `goal-${Date.now()}`,
+      id: goalId,
       title: newTitle.trim(),
       description: newDescription.trim(),
       category: newCategory as any,
@@ -52,9 +53,9 @@ export function GoalsView() {
       xpReward: 200,
       completed: false,
       milestones: [
-        { id: `ms-${Date.now()}-1`, title: 'Define scope and technical milestones', completed: false, xpReward: 50 },
-        { id: `ms-${Date.now()}-2`, title: 'Midpoint execution & performance benchmark', completed: false, xpReward: 75 },
-        { id: `ms-${Date.now()}-3`, title: 'Final deployment and retrospective', completed: false, xpReward: 75 },
+        { id: `ms-${Date.now()}-1`, goalId, order: 1, title: 'Define scope and technical milestones', completed: false, xpReward: 50 },
+        { id: `ms-${Date.now()}-2`, goalId, order: 2, title: 'Midpoint execution & performance benchmark', completed: false, xpReward: 75 },
+        { id: `ms-${Date.now()}-3`, goalId, order: 3, title: 'Final deployment and retrospective', completed: false, xpReward: 75 },
       ],
       createdAt: new Date().toISOString(),
     };

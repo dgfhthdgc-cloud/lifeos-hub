@@ -25,9 +25,8 @@ export function HabitsView() {
 
   // New habit state
   const [newTitle, setNewTitle] = useState('');
-  const [newCategory, setNewCategory] = useState('Productivity');
+  const [newCategory, setNewCategory] = useState<'Skill' | 'Productivity' | 'Language' | 'Trading' | 'Health' | 'Mindfulness'>('Productivity');
   const [newTargetDays, setNewTargetDays] = useState(7);
-  const [newTimeOfDay, setNewTimeOfDay] = useState<'morning' | 'afternoon' | 'evening' | 'anytime'>('morning');
 
   useEffect(() => {
     setHabits(Storage.getHabits());
@@ -42,7 +41,7 @@ export function HabitsView() {
       setHabits(Storage.getHabits());
       setStreakData(Storage.getStreakData());
       if (res.xpAwarded > 0) {
-        addXp(res.xpAwarded, `Completed habit: ${res.habit.title}`);
+        addXp(res.xpAwarded, `Completed habit: ${res.habit.name}`);
         showToast(`Habit logged! +${res.xpAwarded} XP (Streak: ${res.habit.currentStreak} days)`, 'success');
       }
     }
@@ -62,15 +61,17 @@ export function HabitsView() {
 
     const newHabit: HabitItem = {
       id: `hab-${Date.now()}`,
-      title: newTitle.trim(),
+      name: newTitle.trim(),
+      description: 'Daily consistency ritual',
       category: newCategory,
-      targetDaysPerWeek: newTargetDays,
-      timeOfDay: newTimeOfDay,
+      frequency: 'daily',
+      target: `${newTargetDays} days/week`,
+      difficulty: 'medium',
+      xp: 25,
       currentStreak: 0,
-      longestStreak: 0,
+      bestStreak: 0,
       completedToday: false,
       history: [],
-      xpPerCheckin: 25,
       createdAt: new Date().toISOString(),
     };
 
@@ -130,13 +131,13 @@ export function HabitsView() {
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="text-base font-extrabold">{streakData.currentGlobalStreak} Day Global Streak</span>
+                <span className="text-base font-extrabold">{streakData.currentStreak} Day Global Streak</span>
                 <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-orange-500/20 text-orange-400 border border-orange-500/30">
                   {streakData.multiplier}x Multiplier
                 </span>
               </div>
               <p className="text-xs text-neutral-400 mt-0.5">
-                Longest recorded streak: {streakData.longestGlobalStreak} days across all core disciplines
+                Longest recorded streak: {streakData.bestStreak} days across all core disciplines
               </p>
             </div>
           </div>
@@ -145,19 +146,19 @@ export function HabitsView() {
             <div className="flex items-center gap-1.5 bg-neutral-800/80 px-3 py-1.5 rounded-xl border border-neutral-700">
               <Shield className="w-4 h-4 text-cyan-400" />
               <span className="text-xs font-semibold">
-                {streakData.freezeShieldsAvailable} / {streakData.maxFreezeShields} Shields
+                {streakData.streakShields} / {streakData.maxShields} Shields
               </span>
             </div>
             <button
               onClick={handleToggleFreeze}
-              disabled={streakData.freezeShieldsAvailable <= 0}
+              disabled={streakData.streakShields <= 0 && !streakData.freezeActive}
               className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
-                streakData.freezeShieldActive
+                streakData.freezeActive
                   ? 'bg-cyan-500 text-neutral-950 shadow-sm'
                   : 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300'
               }`}
             >
-              {streakData.freezeShieldActive ? 'Shield Active' : 'Arm Freeze Shield'}
+              {streakData.freezeActive ? 'Shield Active' : 'Arm Freeze Shield'}
             </button>
           </div>
         </div>
@@ -184,11 +185,11 @@ export function HabitsView() {
                       <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-500">
                         {habit.category}
                       </span>
-                      <span className="text-[10px] text-neutral-400 font-medium capitalize">
-                        {habit.timeOfDay}
+                      <span className="text-[10px] text-neutral-400 font-medium">
+                        {habit.target}
                       </span>
                     </div>
-                    <h3 className="text-base font-bold text-neutral-900 dark:text-white">{habit.title}</h3>
+                    <h3 className="text-base font-bold text-neutral-900 dark:text-white">{habit.name}</h3>
                   </div>
 
                   <div className="flex items-center gap-1 text-orange-500 font-black text-sm shrink-0">
@@ -229,7 +230,7 @@ export function HabitsView() {
               {/* Action */}
               <div className="pt-3 border-t border-neutral-100 dark:border-neutral-800/80 flex items-center justify-between">
                 <span className="text-xs text-neutral-400">
-                  Best: <strong className="text-neutral-700 dark:text-neutral-300">{habit.longestStreak} days</strong>
+                  Best: <strong className="text-neutral-700 dark:text-neutral-300">{habit.bestStreak} days</strong>
                 </span>
                 <button
                   onClick={() => handleToggleHabit(habit.id)}
@@ -242,12 +243,12 @@ export function HabitsView() {
                   {isDoneToday ? (
                     <>
                       <CheckCircle2 className="w-4 h-4" />
-                      Logged Today (+{habit.xpPerCheckin || 25} XP)
+                      Logged Today (+{habit.xp || 25} XP)
                     </>
                   ) : (
                     <>
                       <Zap className="w-4 h-4" />
-                      Complete Today (+{habit.xpPerCheckin || 25} XP)
+                      Complete Today (+{habit.xp || 25} XP)
                     </>
                   )}
                 </button>
@@ -275,36 +276,20 @@ export function HabitsView() {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold uppercase text-neutral-400 mb-1">Category</label>
-                  <select
-                    value={newCategory}
-                    onChange={(e) => setNewCategory(e.target.value)}
-                    className="w-full bg-neutral-50 dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 rounded-xl px-3 py-2 text-xs text-neutral-900 dark:text-white focus:outline-none"
-                  >
-                    <option value="Productivity">Productivity</option>
-                    <option value="Engineering">Engineering</option>
-                    <option value="Health">Health</option>
-                    <option value="Learning">Learning</option>
-                    <option value="Trading">Trading</option>
-                    <option value="Mindset">Mindset</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold uppercase text-neutral-400 mb-1">Time of Day</label>
-                  <select
-                    value={newTimeOfDay}
-                    onChange={(e) => setNewTimeOfDay(e.target.value as any)}
-                    className="w-full bg-neutral-50 dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 rounded-xl px-3 py-2 text-xs text-neutral-900 dark:text-white focus:outline-none"
-                  >
-                    <option value="morning">Morning</option>
-                    <option value="afternoon">Afternoon</option>
-                    <option value="evening">Evening</option>
-                    <option value="anytime">Anytime</option>
-                  </select>
-                </div>
+              <div>
+                <label className="block text-xs font-semibold uppercase text-neutral-400 mb-1">Category</label>
+                <select
+                  value={newCategory}
+                  onChange={(e) => setNewCategory(e.target.value as any)}
+                  className="w-full bg-neutral-50 dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 rounded-xl px-3 py-2 text-xs text-neutral-900 dark:text-white focus:outline-none"
+                >
+                  <option value="Productivity">Productivity</option>
+                  <option value="Skill">Skill</option>
+                  <option value="Health">Health</option>
+                  <option value="Language">Language</option>
+                  <option value="Trading">Trading</option>
+                  <option value="Mindfulness">Mindfulness</option>
+                </select>
               </div>
 
               <div className="flex items-center justify-end gap-2.5 pt-2">

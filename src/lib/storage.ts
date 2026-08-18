@@ -1105,12 +1105,14 @@ export const Storage = {
     lesson: CourseLesson | null;
     xpAwarded: number;
     isCompleted: boolean;
+    newCertificate?: CourseCertificate | null;
   } {
     const courses = this.getDetailedCourses();
     let updatedCourse: DetailedCourse | null = null;
     let targetLesson: CourseLesson | null = null;
     let xpAwarded = 0;
     let isCompleted = false;
+    let newCertificate: CourseCertificate | null = null;
 
     const updated = courses.map((c) => {
       if (c.id === courseId) {
@@ -1138,9 +1140,26 @@ export const Storage = {
         const allLessons = updatedModules.flatMap((m) => m.lessons);
         const allCompleted = allLessons.length > 0 && allLessons.every((l) => l.completed);
 
+        let cert = c.certificate;
+        if (allCompleted && !cert) {
+          cert = {
+            id: `cert-${c.id}-${Date.now()}`,
+            credentialId: `CERT-LIFEOS-${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
+            courseId: c.id,
+            courseTitle: c.title,
+            recipientName: this.getUser().name || 'Mastery Student',
+            issueDate: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+            verified: true,
+            scorePercentage: 100,
+            skillsAcquired: c.learningOutcomes.slice(0, 4),
+          };
+          newCertificate = cert;
+        }
+
         updatedCourse = {
           ...c,
           modules: updatedModules,
+          certificate: cert,
           completedAt: allCompleted ? (c.completedAt || new Date().toISOString()) : undefined,
         };
         return updatedCourse;
@@ -1149,7 +1168,7 @@ export const Storage = {
     });
 
     this.setDetailedCourses(updated);
-    return { course: updatedCourse, lesson: targetLesson, xpAwarded, isCompleted };
+    return { course: updatedCourse, lesson: targetLesson, xpAwarded, isCompleted, newCertificate };
   },
 
   saveLessonNote(courseId: string, lessonId: string, noteContent: string): void {
@@ -1572,6 +1591,10 @@ export const Storage = {
     }
 
     return newTx;
+  },
+
+  recordXpTransaction(txData: Omit<XpTransaction, 'id'> & { timestamp?: string }): XpTransaction {
+    return this.addXpTransaction(txData);
   },
 
   // -------------------------------------------------------------
