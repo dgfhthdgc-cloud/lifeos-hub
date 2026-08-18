@@ -1,18 +1,20 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { UserProfile } from '../types';
-import { Storage, INITIAL_USER, DEMO_USER } from '../lib/storage';
+import { Storage, DEMO_USER } from '../lib/storage';
 import { getXpRequiredForLevel, LEVEL_RANKS } from '../lib/gamification';
 
 interface AuthContextType {
   user: UserProfile | null;
   isAuthenticated: boolean;
   isDemoMode: boolean;
+  isOffline: boolean;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<boolean>;
   loginAsDemo: () => void;
   signup: (email: string, name: string, password: string) => Promise<boolean>;
   logout: () => void;
   updateUser: (updates: Partial<UserProfile>) => void;
+  setAuthoritativeUser: (profile: UserProfile | null) => void;
   addXp: (amount: number, reason?: string) => void;
 }
 
@@ -22,6 +24,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [isDemoMode, setIsDemoMode] = useState<boolean>(false);
+  const [isOffline, setIsOffline] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
   // Validate session on mount
@@ -36,6 +39,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(savedDemo);
         setIsAuthenticated(true);
         setIsDemoMode(true);
+        setIsOffline(false);
         setIsLoading(false);
         return;
       }
@@ -53,6 +57,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               Storage.setUser(data.user);
               setIsAuthenticated(true);
               setIsDemoMode(false);
+              setIsOffline(false);
               setIsLoading(false);
               return;
             }
@@ -64,19 +69,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setUser(null);
             setIsAuthenticated(false);
             setIsDemoMode(false);
+            setIsOffline(false);
             setIsLoading(false);
             return;
           }
         } catch {
-          // In case of offline network failure while holding a previously valid token
+          // Server unreachable / network failure
+          // Cached user info may be kept for offline inspection, but isAuthenticated MUST NOT be true based solely on cached data
           const savedUser = Storage.getUser();
-          if (savedUser && savedUser.id !== 'usr_init_1') {
-            setUser(savedUser);
-            setIsAuthenticated(true);
-            setIsDemoMode(false);
-            setIsLoading(false);
-            return;
-          }
+          setUser(savedUser || null);
+          setIsAuthenticated(false);
+          setIsDemoMode(false);
+          setIsOffline(true);
+          setIsLoading(false);
+          return;
         }
       }
 
@@ -84,6 +90,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(null);
       setIsAuthenticated(false);
       setIsDemoMode(false);
+      setIsOffline(false);
       setIsLoading(false);
     }
 
@@ -110,11 +117,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           Storage.setUser(data.user);
           setIsAuthenticated(true);
           setIsDemoMode(false);
+          setIsOffline(false);
           return true;
         }
       }
 
-      // Explicit authentication failure - Never auto-authenticate
       return false;
     } catch {
       return false;
@@ -130,6 +137,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(DEMO_USER);
     setIsAuthenticated(true);
     setIsDemoMode(true);
+    setIsOffline(false);
   };
 
   const signup = async (email: string, name: string, password: string): Promise<boolean> => {
@@ -152,6 +160,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           Storage.setUser(data.user);
           setIsAuthenticated(true);
           setIsDemoMode(false);
+          setIsOffline(false);
           return true;
         }
       }
@@ -169,7 +178,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.removeItem('lifeos_demo_mode');
     setIsAuthenticated(false);
     setIsDemoMode(false);
+    setIsOffline(false);
     setUser(null);
+  };
+
+  const setAuthoritativeUser = (profile: UserProfile | null) => {
+    setUser(profile);
+    if (profile) {
+      Storage.setUser(profile);
+    }
   };
 
   const updateUser = async (updates: Partial<UserProfile>) => {
@@ -181,7 +198,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     const token = localStorage.getItem('lifeos_auth_token');
-    if (token) {
+    if (token && !isDemoMode) {
       try {
         await fetch('/api/auth/profile', {
           method: 'PATCH',
@@ -200,7 +217,39 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const addXp = async (amount: number, reason?: string) => {
     if (amount <= 0) return;
 
-    // Server-Authoritative XP Ledger Call
+    // In demo mode: local computation is legitimate for demonstration
+    if (isDemoMode) {
+      setUser((prev) => {
+        if (!prev) return null;
+        let newCurrentXp = prev.currentXp + amount;
+        let newLevel = prev.level;
+        let nextXp = prev.nextLevelXp;
+
+        while (newCurrentXp >= nextXp) {
+          newCurrentXp -= nextXp;
+          newLevel += 1;
+          nextXp = getXpRequiredForLevel(newLevel);
+        }
+
+        const matchedRank = [...LEVEL_RANKS].reverse().find((r) => newLevel >= r.level);
+        const newTitle = matchedRank ? matchedRank.title : prev.title;
+
+        const updated: UserProfile = {
+          ...prev,
+          currentXp: newCurrentXp,
+          level: newLevel,
+          nextLevelXp: nextXp,
+          title: newTitle || prev.title,
+        };
+
+        Storage.setUser(updated);
+        return updated;
+      });
+      return;
+    }
+
+    // In authenticated mode: Must be server-authoritative.
+    // We never trust client-provided XP locally without server validation.
     const token = localStorage.getItem('lifeos_auth_token');
     if (token) {
       try {
@@ -217,54 +266,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (data.user) {
             setUser(data.user);
             Storage.setUser(data.user);
-            return;
           }
         }
       } catch {
-        // fallback to local calculation
+        console.warn('Authoritative XP award failed; arbitrary client XP was not granted.');
       }
     }
-
-    setUser((prev) => {
-      if (!prev) return null;
-      let newCurrentXp = prev.currentXp + amount;
-      let newLevel = prev.level;
-      let nextXp = prev.nextLevelXp;
-
-      while (newCurrentXp >= nextXp) {
-        newCurrentXp -= nextXp;
-        newLevel += 1;
-        nextXp = getXpRequiredForLevel(newLevel);
-      }
-
-      const matchedRank = [...LEVEL_RANKS].reverse().find((r) => newLevel >= r.level);
-      const newTitle = matchedRank ? matchedRank.title : prev.title;
-
-      const updated: UserProfile = {
-        ...prev,
-        currentXp: newCurrentXp,
-        level: newLevel,
-        nextLevelXp: nextXp,
-        title: newTitle || prev.title,
-      };
-
-      Storage.setUser(updated);
-
-      try {
-        if (typeof Storage.recordXpTransaction === 'function') {
-          Storage.recordXpTransaction({
-            amount,
-            reason: reason || 'Activity completed',
-            category: 'general',
-            timestamp: new Date().toISOString(),
-          });
-        }
-      } catch {
-        // ignore
-      }
-
-      return updated;
-    });
   };
 
   return (
@@ -272,12 +279,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       value={{
         user,
         isAuthenticated,
+        isDemoMode,
+        isOffline,
         isLoading,
         login,
         loginAsDemo,
         signup,
         logout,
         updateUser,
+        setAuthoritativeUser,
         addXp,
       }}
     >
@@ -293,4 +303,3 @@ export function useAuth() {
   }
   return context;
 }
-

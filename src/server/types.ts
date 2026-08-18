@@ -23,6 +23,7 @@ export interface UserDatabaseState {
   bossRaids: BossBattle[];
   perks: SkillPerkNode[];
   lastSyncedAt: string;
+  processedEvents?: Record<string, { result: any; processedAt: string }>;
 }
 
 export interface AuthTokenPayload {

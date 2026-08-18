@@ -2,8 +2,8 @@ import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
-import { db } from './src/server/db';
-import { generateAuthToken, verifyAuthToken, verifyPassword, validateAuthSecretOnStartup } from './src/server/auth';
+import { db, initDatabase } from './src/server/db';
+import { generateAuthToken, verifyAuthToken, verifyPassword, hashPassword, validateAuthSecretOnStartup } from './src/server/auth';
 import { generateAICoachResponse } from './src/server/aiCoach';
 
 // Extend Express Request with authenticated user
@@ -66,6 +66,9 @@ function createRateLimiter(config: RateLimitConfig) {
 }
 
 async function startServer() {
+  // Initialize durable database and run data migrations
+  await initDatabase();
+
   // Validate authentication secret immediately on startup
   validateAuthSecretOnStartup();
 
@@ -145,7 +148,8 @@ async function startServer() {
         return res.status(400).json({ error: 'WEAK_PASSWORD', message: 'Password must be at least 6 characters.' });
       }
 
-      const userRecord = db.createUser(email, password, typeof name === 'string' ? name : '');
+      const { hash, salt } = hashPassword(password);
+      const userRecord = db.createUser(email, hash, salt, typeof name === 'string' ? name : '');
       const token = generateAuthToken({ userId: userRecord.id, email: userRecord.email });
 
       res.json({
@@ -252,13 +256,16 @@ async function startServer() {
   // -------------------------------------------------------------
 
   // Tasks
-  app.post('/api/domain/tasks/complete', requireAuth, (req, res) => {
+  const handleTaskComplete = (req: any, res: any) => {
     try {
-      const { taskId } = req.body;
+      const taskId = req.params.id || req.body.taskId;
+      const clientEventId = req.body.clientEventId || req.headers['x-client-event-id'] || undefined;
+      const baseVersion = typeof req.body.baseVersion === 'number' ? req.body.baseVersion : undefined;
+
       if (!taskId || typeof taskId !== 'string') {
         return res.status(400).json({ error: 'INVALID_TASK_ID', message: 'taskId is required.' });
       }
-      const result = db.completeTask(req.user!.userId, taskId);
+      const result = db.completeTask(req.user!.userId, taskId, clientEventId, baseVersion);
       if (!result.success) {
         return res.status(404).json({ error: result.error || 'TASK_NOT_FOUND', message: 'Task not found.' });
       }
@@ -266,27 +273,37 @@ async function startServer() {
     } catch (err: any) {
       res.status(500).json({ error: 'TASK_COMPLETE_FAILED', message: err?.message });
     }
-  });
+  };
+
+  app.post('/api/domain/tasks/complete', requireAuth, handleTaskComplete);
+  app.post('/api/domain/tasks/:id/complete', requireAuth, handleTaskComplete);
 
   app.post('/api/domain/tasks/create', requireAuth, (req, res) => {
     try {
       if (!req.body || typeof req.body !== 'object') {
         return res.status(400).json({ error: 'INVALID_PAYLOAD', message: 'Task payload is required.' });
       }
-      const result = db.createTask(req.user!.userId, req.body);
+      const clientEventId = req.body.clientEventId || req.headers['x-client-event-id'] || undefined;
+      const baseVersion = typeof req.body.baseVersion === 'number' ? req.body.baseVersion : undefined;
+      const taskData = req.body.task || req.body;
+      const result = db.createTask(req.user!.userId, taskData, clientEventId, baseVersion);
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: 'TASK_CREATE_FAILED', message: err?.message });
     }
   });
 
-  app.post('/api/domain/tasks/update', requireAuth, (req, res) => {
+  const handleTaskUpdate = (req: any, res: any) => {
     try {
-      const { taskId, updates } = req.body;
+      const taskId = req.params.id || req.body.taskId;
+      const updates = req.body.updates || req.body;
+      const clientEventId = req.body.clientEventId || req.headers['x-client-event-id'] || undefined;
+      const baseVersion = typeof req.body.baseVersion === 'number' ? req.body.baseVersion : undefined;
+
       if (!taskId || typeof taskId !== 'string' || !updates || typeof updates !== 'object') {
         return res.status(400).json({ error: 'INVALID_PAYLOAD', message: 'taskId and updates are required.' });
       }
-      const result = db.updateTask(req.user!.userId, taskId, updates);
+      const result = db.updateTask(req.user!.userId, taskId, updates, clientEventId, baseVersion);
       if (!result.success) {
         return res.status(404).json({ error: result.error || 'TASK_NOT_FOUND', message: 'Task not found.' });
       }
@@ -294,15 +311,22 @@ async function startServer() {
     } catch (err: any) {
       res.status(500).json({ error: 'TASK_UPDATE_FAILED', message: err?.message });
     }
-  });
+  };
 
-  app.post('/api/domain/tasks/delete', requireAuth, (req, res) => {
+  app.post('/api/domain/tasks/update', requireAuth, handleTaskUpdate);
+  app.post('/api/domain/tasks/:id/update', requireAuth, handleTaskUpdate);
+  app.patch('/api/domain/tasks/:id', requireAuth, handleTaskUpdate);
+
+  const handleTaskDelete = (req: any, res: any) => {
     try {
-      const { taskId } = req.body;
+      const taskId = req.params.id || req.body.taskId;
+      const clientEventId = req.body.clientEventId || req.headers['x-client-event-id'] || undefined;
+      const baseVersion = typeof req.body.baseVersion === 'number' ? req.body.baseVersion : undefined;
+
       if (!taskId || typeof taskId !== 'string') {
         return res.status(400).json({ error: 'INVALID_TASK_ID', message: 'taskId is required.' });
       }
-      const result = db.deleteTask(req.user!.userId, taskId);
+      const result = db.deleteTask(req.user!.userId, taskId, clientEventId, baseVersion);
       if (!result.success) {
         return res.status(404).json({ error: result.error || 'TASK_NOT_FOUND', message: 'Task not found.' });
       }
@@ -310,16 +334,24 @@ async function startServer() {
     } catch (err: any) {
       res.status(500).json({ error: 'TASK_DELETE_FAILED', message: err?.message });
     }
-  });
+  };
+
+  app.post('/api/domain/tasks/delete', requireAuth, handleTaskDelete);
+  app.post('/api/domain/tasks/:id/delete', requireAuth, handleTaskDelete);
+  app.delete('/api/domain/tasks/:id', requireAuth, handleTaskDelete);
 
   // Habits
-  app.post('/api/domain/habits/complete', requireAuth, (req, res) => {
+  const handleHabitComplete = (req: any, res: any) => {
     try {
-      const { habitId, date } = req.body;
+      const habitId = req.params.id || req.body.habitId;
+      const { date } = req.body;
+      const clientEventId = req.body.clientEventId || req.headers['x-client-event-id'] || undefined;
+      const baseVersion = typeof req.body.baseVersion === 'number' ? req.body.baseVersion : undefined;
+
       if (!habitId || typeof habitId !== 'string') {
         return res.status(400).json({ error: 'INVALID_HABIT_ID', message: 'habitId is required.' });
       }
-      const result = db.completeHabit(req.user!.userId, habitId, typeof date === 'string' ? date : undefined);
+      const result = db.completeHabit(req.user!.userId, habitId, typeof date === 'string' ? date : undefined, clientEventId, baseVersion);
       if (!result.success) {
         return res.status(404).json({ error: result.error || 'HABIT_NOT_FOUND', message: 'Habit not found.' });
       }
@@ -327,27 +359,37 @@ async function startServer() {
     } catch (err: any) {
       res.status(500).json({ error: 'HABIT_COMPLETE_FAILED', message: err?.message });
     }
-  });
+  };
+
+  app.post('/api/domain/habits/complete', requireAuth, handleHabitComplete);
+  app.post('/api/domain/habits/:id/complete', requireAuth, handleHabitComplete);
 
   app.post('/api/domain/habits/create', requireAuth, (req, res) => {
     try {
       if (!req.body || typeof req.body !== 'object') {
         return res.status(400).json({ error: 'INVALID_PAYLOAD', message: 'Habit payload is required.' });
       }
-      const result = db.createHabit(req.user!.userId, req.body);
+      const clientEventId = req.body.clientEventId || req.headers['x-client-event-id'] || undefined;
+      const baseVersion = typeof req.body.baseVersion === 'number' ? req.body.baseVersion : undefined;
+      const habitData = req.body.habit || req.body;
+      const result = db.createHabit(req.user!.userId, habitData, clientEventId, baseVersion);
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: 'HABIT_CREATE_FAILED', message: err?.message });
     }
   });
 
-  app.post('/api/domain/habits/update', requireAuth, (req, res) => {
+  const handleHabitUpdate = (req: any, res: any) => {
     try {
-      const { habitId, updates } = req.body;
+      const habitId = req.params.id || req.body.habitId;
+      const updates = req.body.updates || req.body;
+      const clientEventId = req.body.clientEventId || req.headers['x-client-event-id'] || undefined;
+      const baseVersion = typeof req.body.baseVersion === 'number' ? req.body.baseVersion : undefined;
+
       if (!habitId || typeof habitId !== 'string' || !updates || typeof updates !== 'object') {
         return res.status(400).json({ error: 'INVALID_PAYLOAD', message: 'habitId and updates are required.' });
       }
-      const result = db.updateHabit(req.user!.userId, habitId, updates);
+      const result = db.updateHabit(req.user!.userId, habitId, updates, clientEventId, baseVersion);
       if (!result.success) {
         return res.status(404).json({ error: result.error || 'HABIT_NOT_FOUND', message: 'Habit not found.' });
       }
@@ -355,15 +397,22 @@ async function startServer() {
     } catch (err: any) {
       res.status(500).json({ error: 'HABIT_UPDATE_FAILED', message: err?.message });
     }
-  });
+  };
 
-  app.post('/api/domain/habits/delete', requireAuth, (req, res) => {
+  app.post('/api/domain/habits/update', requireAuth, handleHabitUpdate);
+  app.post('/api/domain/habits/:id/update', requireAuth, handleHabitUpdate);
+  app.patch('/api/domain/habits/:id', requireAuth, handleHabitUpdate);
+
+  const handleHabitDelete = (req: any, res: any) => {
     try {
-      const { habitId } = req.body;
+      const habitId = req.params.id || req.body.habitId;
+      const clientEventId = req.body.clientEventId || req.headers['x-client-event-id'] || undefined;
+      const baseVersion = typeof req.body.baseVersion === 'number' ? req.body.baseVersion : undefined;
+
       if (!habitId || typeof habitId !== 'string') {
         return res.status(400).json({ error: 'INVALID_HABIT_ID', message: 'habitId is required.' });
       }
-      const result = db.deleteHabit(req.user!.userId, habitId);
+      const result = db.deleteHabit(req.user!.userId, habitId, clientEventId, baseVersion);
       if (!result.success) {
         return res.status(404).json({ error: result.error || 'HABIT_NOT_FOUND', message: 'Habit not found.' });
       }
@@ -371,12 +420,19 @@ async function startServer() {
     } catch (err: any) {
       res.status(500).json({ error: 'HABIT_DELETE_FAILED', message: err?.message });
     }
-  });
+  };
+
+  app.post('/api/domain/habits/delete', requireAuth, handleHabitDelete);
+  app.post('/api/domain/habits/:id/delete', requireAuth, handleHabitDelete);
+  app.delete('/api/domain/habits/:id', requireAuth, handleHabitDelete);
 
   // Goals
   app.post('/api/domain/goals/progress', requireAuth, (req, res) => {
     try {
       const { goalId, progress, milestoneId } = req.body;
+      const clientEventId = req.body.clientEventId || req.headers['x-client-event-id'] || undefined;
+      const baseVersion = typeof req.body.baseVersion === 'number' ? req.body.baseVersion : undefined;
+
       if (!goalId || typeof goalId !== 'string' || typeof progress !== 'number') {
         return res.status(400).json({ error: 'INVALID_PAYLOAD', message: 'goalId and numeric progress are required.' });
       }
@@ -384,7 +440,9 @@ async function startServer() {
         req.user!.userId,
         goalId,
         progress,
-        typeof milestoneId === 'string' ? milestoneId : undefined
+        typeof milestoneId === 'string' ? milestoneId : undefined,
+        clientEventId,
+        baseVersion
       );
       if (!result.success) {
         return res.status(404).json({ error: result.error || 'GOAL_NOT_FOUND', message: 'Goal not found.' });
@@ -401,7 +459,7 @@ async function startServer() {
 
   app.post('/api/gamification/award-xp', requireAuth, xpRateLimiter, (req, res) => {
     try {
-      const { amount, reason, category } = req.body;
+      const { amount, reason, category, clientEventId } = req.body;
       if (typeof amount !== 'number' || !Number.isInteger(amount) || amount <= 0 || amount > 500) {
         return res.status(400).json({
           error: 'INVALID_XP_AMOUNT',
@@ -410,7 +468,8 @@ async function startServer() {
       }
 
       const safeReason = typeof reason === 'string' ? reason.slice(0, 100) : 'Activity completed';
-      const result = db.recordXpTransaction(req.user!.userId, amount, safeReason, category);
+      const eventId = clientEventId || req.headers['x-client-event-id'] || undefined;
+      const result = db.recordXpTransaction(req.user!.userId, amount, safeReason, category, eventId);
 
       res.json({
         success: true,

@@ -126,6 +126,7 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
             tags: ['Architecture', 'Security', 'Backend'],
             xp: 150,
             completed: false,
+            createdAt: new Date().toISOString(),
           },
           {
             id: 'task-2',
@@ -140,6 +141,7 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
             tags: ['Risk', 'Simulation'],
             xp: 100,
             completed: false,
+            createdAt: new Date().toISOString(),
           },
         ],
         habits: [
@@ -456,23 +458,58 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
     };
   }
 
-  // Authoritative Domain Action: Complete Task
-  public completeTask(userId: string, taskId: string): TaskCompletionResult {
+  private cacheProcessedEvent(userId: string, clientEventId: string, result: any): void {
     const state = this.getUserState(userId);
+    if (!state.processedEvents) {
+      state.processedEvents = {};
+    }
+    state.processedEvents[clientEventId] = {
+      result,
+      processedAt: new Date().toISOString(),
+    };
+    const keys = Object.keys(state.processedEvents);
+    if (keys.length > 200) {
+      const oldestKeys = keys.slice(0, keys.length - 200);
+      for (const k of oldestKeys) {
+        delete state.processedEvents[k];
+      }
+    }
+    this.saveToDisk();
+  }
+
+  // Authoritative Domain Action: Complete Task
+  public completeTask(
+    userId: string,
+    taskId: string,
+    clientEventId?: string,
+    baseVersion?: number
+  ): TaskCompletionResult {
+    const state = this.getUserState(userId);
+
+    // Idempotency: return cached response if clientEventId was already processed
+    if (clientEventId && state.processedEvents && state.processedEvents[clientEventId]) {
+      return state.processedEvents[clientEventId].result;
+    }
+
     const task = state.tasks.find((t) => t.id === taskId);
 
     if (!task) {
-      return { success: false, version: state.version, error: 'TASK_NOT_FOUND' };
+      const errRes: TaskCompletionResult = { success: false, version: state.version, error: 'TASK_NOT_FOUND' };
+      return errRes;
     }
 
     if (task.completed) {
-      return {
+      const alreadyCompletedRes: TaskCompletionResult = {
         success: true,
         task,
         profile: state.profile,
         version: state.version,
         alreadyCompleted: true,
       };
+      if (clientEventId) {
+        this.cacheProcessedEvent(userId, clientEventId, alreadyCompletedRes);
+      }
+      return alreadyCompletedRes;
     }
 
     // Authoritatively mark completed
@@ -485,7 +522,7 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
     if (task.priority === 'high') awardedXp = 150;
     else if (task.priority === 'medium') awardedXp = 100;
     if (typeof task.xp === 'number' && task.xp > 0 && task.xp <= 300) {
-      awardedXp = task.xp;
+      awardedXp = Math.floor(task.xp);
     }
 
     const { profile, transaction } = this.recordXpTransaction(
@@ -499,7 +536,7 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
     state.lastSyncedAt = new Date().toISOString();
     this.saveToDisk();
 
-    return {
+    const result: TaskCompletionResult = {
       success: true,
       task,
       profile,
@@ -507,14 +544,30 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
       version: state.version,
       alreadyCompleted: false,
     };
+
+    if (clientEventId) {
+      this.cacheProcessedEvent(userId, clientEventId, result);
+    }
+
+    return result;
   }
 
-  public createTask(userId: string, taskInput: Omit<TaskItem, 'id'>): { success: boolean; task: TaskItem; version: number } {
+  public createTask(
+    userId: string,
+    taskInput: Omit<TaskItem, 'id'>,
+    clientEventId?: string,
+    baseVersion?: number
+  ): { success: boolean; task: TaskItem; version: number } {
     const state = this.getUserState(userId);
+
+    if (clientEventId && state.processedEvents && state.processedEvents[clientEventId]) {
+      return state.processedEvents[clientEventId].result;
+    }
+
     const clean = this.sanitizeKeys(taskInput);
 
     const newTask: TaskItem = {
-      id: `task-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: clean.id && typeof clean.id === 'string' ? clean.id : `task-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       title: String(clean.title || 'New Task').slice(0, 150),
       description: String(clean.description || '').slice(0, 500),
       dueDate: String(clean.dueDate || new Date().toISOString().split('T')[0]).slice(0, 20),
@@ -526,6 +579,7 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
       tags: Array.isArray(clean.tags) ? clean.tags.map((t: any) => String(t).slice(0, 30)) : [],
       xp: typeof clean.xp === 'number' ? Math.max(10, Math.min(300, clean.xp)) : 50,
       completed: false,
+      createdAt: typeof clean.createdAt === 'string' ? clean.createdAt : new Date().toISOString(),
     };
 
     state.tasks.push(newTask);
@@ -533,15 +587,26 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
     state.lastSyncedAt = new Date().toISOString();
     this.saveToDisk();
 
-    return { success: true, task: newTask, version: state.version };
+    const result = { success: true, task: newTask, version: state.version };
+    if (clientEventId) {
+      this.cacheProcessedEvent(userId, clientEventId, result);
+    }
+    return result;
   }
 
   public updateTask(
     userId: string,
     taskId: string,
-    updates: Partial<TaskItem>
+    updates: Partial<TaskItem>,
+    clientEventId?: string,
+    baseVersion?: number
   ): { success: boolean; task?: TaskItem; version: number; error?: string } {
     const state = this.getUserState(userId);
+
+    if (clientEventId && state.processedEvents && state.processedEvents[clientEventId]) {
+      return state.processedEvents[clientEventId].result;
+    }
+
     const task = state.tasks.find((t) => t.id === taskId);
     if (!task) return { success: false, version: state.version, error: 'TASK_NOT_FOUND' };
 
@@ -551,16 +616,39 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
     if (typeof clean.priority === 'string') task.priority = clean.priority;
     if (typeof clean.category === 'string') task.category = clean.category.slice(0, 50);
     if (Array.isArray(clean.tags)) task.tags = clean.tags.map((t: any) => String(t).slice(0, 30));
+    if (typeof clean.dueDate === 'string') task.dueDate = clean.dueDate.slice(0, 20);
+    if (typeof clean.time === 'string') task.time = clean.time.slice(0, 20);
+    if (typeof clean.status === 'string') task.status = clean.status;
+    if (typeof clean.completed === 'boolean') {
+      task.completed = clean.completed;
+      if (!clean.completed) {
+        task.completedAt = undefined;
+      }
+    }
 
     state.version = (state.version || 1) + 1;
     state.lastSyncedAt = new Date().toISOString();
     this.saveToDisk();
 
-    return { success: true, task, version: state.version };
+    const result = { success: true, task, version: state.version };
+    if (clientEventId) {
+      this.cacheProcessedEvent(userId, clientEventId, result);
+    }
+    return result;
   }
 
-  public deleteTask(userId: string, taskId: string): { success: boolean; version: number; error?: string } {
+  public deleteTask(
+    userId: string,
+    taskId: string,
+    clientEventId?: string,
+    baseVersion?: number
+  ): { success: boolean; version: number; error?: string } {
     const state = this.getUserState(userId);
+
+    if (clientEventId && state.processedEvents && state.processedEvents[clientEventId]) {
+      return state.processedEvents[clientEventId].result;
+    }
+
     const initialLen = state.tasks.length;
     state.tasks = state.tasks.filter((t) => t.id !== taskId);
 
@@ -572,12 +660,27 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
     state.lastSyncedAt = new Date().toISOString();
     this.saveToDisk();
 
-    return { success: true, version: state.version };
+    const result = { success: true, version: state.version };
+    if (clientEventId) {
+      this.cacheProcessedEvent(userId, clientEventId, result);
+    }
+    return result;
   }
 
   // Authoritative Domain Action: Complete Habit
-  public completeHabit(userId: string, habitId: string, dateStr?: string): HabitCompletionResult {
+  public completeHabit(
+    userId: string,
+    habitId: string,
+    dateStr?: string,
+    clientEventId?: string,
+    baseVersion?: number
+  ): HabitCompletionResult {
     const state = this.getUserState(userId);
+
+    if (clientEventId && state.processedEvents && state.processedEvents[clientEventId]) {
+      return state.processedEvents[clientEventId].result;
+    }
+
     const habit = state.habits.find((h) => h.id === habitId);
 
     if (!habit) {
@@ -586,13 +689,17 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
 
     const targetDate = dateStr || new Date().toISOString().split('T')[0];
     if (habit.history.includes(targetDate)) {
-      return {
+      const alreadyRes: HabitCompletionResult = {
         success: true,
         habit,
         profile: state.profile,
         version: state.version,
         alreadyCompleted: true,
       };
+      if (clientEventId) {
+        this.cacheProcessedEvent(userId, clientEventId, alreadyRes);
+      }
+      return alreadyRes;
     }
 
     habit.history.push(targetDate);
@@ -606,7 +713,7 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
     if (habit.difficulty === 'hard') habitXp = 60;
     else if (habit.difficulty === 'easy') habitXp = 25;
     if (typeof habit.xp === 'number' && habit.xp > 0 && habit.xp <= 200) {
-      habitXp = habit.xp;
+      habitXp = Math.floor(habit.xp);
     }
 
     const { profile, transaction } = this.recordXpTransaction(
@@ -620,7 +727,7 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
     state.lastSyncedAt = new Date().toISOString();
     this.saveToDisk();
 
-    return {
+    const result: HabitCompletionResult = {
       success: true,
       habit,
       profile,
@@ -628,14 +735,30 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
       version: state.version,
       alreadyCompleted: false,
     };
+
+    if (clientEventId) {
+      this.cacheProcessedEvent(userId, clientEventId, result);
+    }
+
+    return result;
   }
 
-  public createHabit(userId: string, habitInput: Omit<HabitItem, 'id'>): { success: boolean; habit: HabitItem; version: number } {
+  public createHabit(
+    userId: string,
+    habitInput: Omit<HabitItem, 'id'>,
+    clientEventId?: string,
+    baseVersion?: number
+  ): { success: boolean; habit: HabitItem; version: number } {
     const state = this.getUserState(userId);
+
+    if (clientEventId && state.processedEvents && state.processedEvents[clientEventId]) {
+      return state.processedEvents[clientEventId].result;
+    }
+
     const clean = this.sanitizeKeys(habitInput);
 
     const newHabit: HabitItem = {
-      id: `habit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: clean.id && typeof clean.id === 'string' ? clean.id : `habit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       name: String(clean.name || 'New Habit').slice(0, 100),
       description: String(clean.description || '').slice(0, 300),
       frequency: clean.frequency || 'daily',
@@ -647,7 +770,7 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
       bestStreak: 0,
       history: [],
       completedToday: false,
-      createdAt: new Date().toISOString(),
+      createdAt: typeof clean.createdAt === 'string' ? clean.createdAt : new Date().toISOString(),
     };
 
     state.habits.push(newHabit);
@@ -655,15 +778,26 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
     state.lastSyncedAt = new Date().toISOString();
     this.saveToDisk();
 
-    return { success: true, habit: newHabit, version: state.version };
+    const result = { success: true, habit: newHabit, version: state.version };
+    if (clientEventId) {
+      this.cacheProcessedEvent(userId, clientEventId, result);
+    }
+    return result;
   }
 
   public updateHabit(
     userId: string,
     habitId: string,
-    updates: Partial<HabitItem>
+    updates: Partial<HabitItem>,
+    clientEventId?: string,
+    baseVersion?: number
   ): { success: boolean; habit?: HabitItem; version: number; error?: string } {
     const state = this.getUserState(userId);
+
+    if (clientEventId && state.processedEvents && state.processedEvents[clientEventId]) {
+      return state.processedEvents[clientEventId].result;
+    }
+
     const habit = state.habits.find((h) => h.id === habitId);
     if (!habit) return { success: false, version: state.version, error: 'HABIT_NOT_FOUND' };
 
@@ -671,16 +805,32 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
     if (typeof clean.name === 'string') habit.name = clean.name.slice(0, 100);
     if (typeof clean.description === 'string') habit.description = clean.description.slice(0, 300);
     if (typeof clean.target === 'string') habit.target = clean.target.slice(0, 50);
+    if (typeof clean.category === 'string') habit.category = clean.category;
+    if (typeof clean.difficulty === 'string') habit.difficulty = clean.difficulty;
 
     state.version = (state.version || 1) + 1;
     state.lastSyncedAt = new Date().toISOString();
     this.saveToDisk();
 
-    return { success: true, habit, version: state.version };
+    const result = { success: true, habit, version: state.version };
+    if (clientEventId) {
+      this.cacheProcessedEvent(userId, clientEventId, result);
+    }
+    return result;
   }
 
-  public deleteHabit(userId: string, habitId: string): { success: boolean; version: number; error?: string } {
+  public deleteHabit(
+    userId: string,
+    habitId: string,
+    clientEventId?: string,
+    baseVersion?: number
+  ): { success: boolean; version: number; error?: string } {
     const state = this.getUserState(userId);
+
+    if (clientEventId && state.processedEvents && state.processedEvents[clientEventId]) {
+      return state.processedEvents[clientEventId].result;
+    }
+
     const initialLen = state.habits.length;
     state.habits = state.habits.filter((h) => h.id !== habitId);
 
@@ -692,7 +842,11 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
     state.lastSyncedAt = new Date().toISOString();
     this.saveToDisk();
 
-    return { success: true, version: state.version };
+    const result = { success: true, version: state.version };
+    if (clientEventId) {
+      this.cacheProcessedEvent(userId, clientEventId, result);
+    }
+    return result;
   }
 
   // Authoritative Domain Action: Goal Progress
@@ -700,9 +854,16 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
     userId: string,
     goalId: string,
     progress: number,
-    milestoneId?: string
+    milestoneId?: string,
+    clientEventId?: string,
+    baseVersion?: number
   ): GoalProgressResult {
     const state = this.getUserState(userId);
+
+    if (clientEventId && state.processedEvents && state.processedEvents[clientEventId]) {
+      return state.processedEvents[clientEventId].result;
+    }
+
     const goal = state.goals.find((g) => g.id === goalId);
 
     if (!goal) {
@@ -750,25 +911,37 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
     state.lastSyncedAt = new Date().toISOString();
     this.saveToDisk();
 
-    return {
+    const result: GoalProgressResult = {
       success: true,
       goal,
       profile,
       xpTransaction: transaction,
       version: state.version,
     };
+
+    if (clientEventId) {
+      this.cacheProcessedEvent(userId, clientEventId, result);
+    }
+
+    return result;
   }
 
   public recordXpTransaction(
     userId: string,
     amount: number,
     reason: string,
-    category: XpCategory = 'general'
+    category: XpCategory = 'general',
+    clientEventId?: string
   ): { profile: UserProfile; transaction: XpTransaction; version: number } {
     const user = this.users[userId];
     if (!user) throw new Error('User not found');
 
     const state = this.getUserState(userId);
+
+    if (clientEventId && state.processedEvents && state.processedEvents[clientEventId]) {
+      return state.processedEvents[clientEventId].result;
+    }
+
     const profile = user.profile;
 
     const safeAmount = Math.max(1, Math.min(500, Math.floor(amount)));
@@ -824,7 +997,11 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
 
     this.saveToDisk();
 
-    return { profile, transaction, version: state.version };
+    const result = { profile, transaction, version: state.version };
+    if (clientEventId) {
+      this.cacheProcessedEvent(userId, clientEventId, result);
+    }
+    return result;
   }
 
   public addAiMessage(userId: string, message: AIChatMessage) {

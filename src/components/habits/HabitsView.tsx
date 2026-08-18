@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 
 export function HabitsView() {
-  const { addXp } = useAuth();
+  const { isAuthenticated, isDemoMode, setAuthoritativeUser, addXp } = useAuth();
   const { showToast } = useNotifications();
   const [habits, setHabits] = useState<HabitItem[]>([]);
   const [streakData, setStreakData] = useState<StreakSystemData | null>(null);
@@ -36,16 +36,71 @@ export function HabitsView() {
 
   const todayStr = new Date().toISOString().split('T')[0];
 
-  const handleToggleHabit = (id: string) => {
-    const res = Storage.toggleHabitDay(id, todayStr);
-    if (res.habit) {
-      setHabits(Storage.getHabits());
-      setStreakData(Storage.getStreakData());
-      if (res.xpAwarded > 0) {
-        // Trigger server-authoritative habit completion & XP award
-        syncManager.completeHabit(id, todayStr).catch(() => {});
-        addXp(res.xpAwarded, `Completed habit: ${res.habit.name}`);
-        showToast(`Habit logged! +${res.xpAwarded} XP (Streak: ${res.habit.currentStreak} days)`, 'success');
+  const handleToggleHabit = async (id: string) => {
+    const habit = habits.find((h) => h.id === id);
+    if (!habit) return;
+
+    if (isAuthenticated && !isDemoMode) {
+      const alreadyLoggedToday = habit.history?.includes(todayStr) || habit.completedToday;
+      if (alreadyLoggedToday) {
+        showToast('Habit already logged for today', 'info');
+        return;
+      }
+
+      // Optimistic update
+      const updatedHistory = [...(habit.history || []), todayStr];
+      const newStreak = (habit.currentStreak || 0) + 1;
+      const optimisticHabits = habits.map((h) =>
+        h.id === id
+          ? {
+              ...h,
+              completedToday: true,
+              currentStreak: newStreak,
+              bestStreak: Math.max(h.bestStreak || 0, newStreak),
+              history: updatedHistory,
+            }
+          : h
+      );
+      setHabits(optimisticHabits);
+
+      try {
+        const res = await syncManager.completeHabit(id, todayStr);
+        if (res.success) {
+          if (res.habit) {
+            const finalHabits = habits.map((h) => (h.id === id ? res.habit! : h));
+            setHabits(finalHabits);
+            Storage.setHabits(finalHabits);
+          } else {
+            Storage.setHabits(optimisticHabits);
+          }
+          if (res.profile) {
+            setAuthoritativeUser(res.profile);
+          }
+          if (res.xpTransaction) {
+            showToast(`Habit logged! +${res.xpTransaction.amount} XP (Streak: ${res.habit?.currentStreak ?? newStreak} days)`, 'success');
+          } else if (res.offline) {
+            showToast('Habit logged (queued offline)', 'info');
+          } else if (res.alreadyCompleted) {
+            showToast('Habit already completed today', 'info');
+          }
+        } else {
+          setHabits(habits);
+          showToast(res.error || 'Failed to log habit', 'error');
+        }
+      } catch {
+        setHabits(habits);
+        showToast('Network error logging habit', 'error');
+      }
+    } else {
+      // Demo / Guest mode
+      const res = Storage.toggleHabitDay(id, todayStr);
+      if (res.habit) {
+        setHabits(Storage.getHabits());
+        setStreakData(Storage.getStreakData());
+        if (res.xpAwarded > 0) {
+          addXp(res.xpAwarded, `Completed habit: ${res.habit.name}`);
+          showToast(`Habit logged! +${res.xpAwarded} XP (Streak: ${res.habit.currentStreak} days)`, 'success');
+        }
       }
     }
   };
@@ -58,7 +113,7 @@ export function HabitsView() {
     }
   };
 
-  const handleCreateHabit = (e: React.FormEvent) => {
+  const handleCreateHabit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim()) return;
 
@@ -78,9 +133,18 @@ export function HabitsView() {
       createdAt: new Date().toISOString(),
     };
 
-    const updated = [newHabit, ...habits];
-    Storage.setHabits(updated);
-    setHabits(updated);
+    if (isAuthenticated && !isDemoMode) {
+      const res = await syncManager.createHabit(newHabit);
+      const habitToAdd = res.habit || newHabit;
+      const updated = [habitToAdd, ...habits];
+      Storage.setHabits(updated);
+      setHabits(updated);
+    } else {
+      const updated = [newHabit, ...habits];
+      Storage.setHabits(updated);
+      setHabits(updated);
+    }
+
     setShowAddModal(false);
     setNewTitle('');
     showToast('New habit ritual active', 'success');

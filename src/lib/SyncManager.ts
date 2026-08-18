@@ -3,6 +3,7 @@ import { UserDatabaseState } from '../server/types';
 
 export interface QueuedMutation {
   id: string;
+  clientEventId: string;
   type:
     | 'COMPLETE_TASK'
     | 'CREATE_TASK'
@@ -33,6 +34,10 @@ class SyncManagerEngine {
         this.flushQueue();
       });
     }
+  }
+
+  private generateEventId(): string {
+    return `evt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   }
 
   private getAuthToken(): string | null {
@@ -70,12 +75,14 @@ class SyncManagerEngine {
     }
   }
 
-  public enqueueMutation(type: QueuedMutation['type'], payload: any): void {
+  public enqueueMutation(type: QueuedMutation['type'], payload: any, clientEventId?: string): string {
+    const eventId = clientEventId || this.generateEventId();
     const queue = this.getOfflineQueue();
+
     // Deduplicate identical pending task/habit completions
     if (type === 'COMPLETE_TASK') {
       const exists = queue.some((m) => m.type === 'COMPLETE_TASK' && m.payload?.taskId === payload?.taskId);
-      if (exists) return;
+      if (exists) return eventId;
     }
     if (type === 'COMPLETE_HABIT') {
       const exists = queue.some(
@@ -84,11 +91,12 @@ class SyncManagerEngine {
           m.payload?.habitId === payload?.habitId &&
           m.payload?.date === payload?.date
       );
-      if (exists) return;
+      if (exists) return eventId;
     }
 
     queue.push({
       id: `mut_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      clientEventId: eventId,
       type,
       payload,
       timestamp: new Date().toISOString(),
@@ -100,6 +108,8 @@ class SyncManagerEngine {
     if (navigator.onLine) {
       this.triggerDebouncedFlush();
     }
+
+    return eventId;
   }
 
   public triggerDebouncedFlush(): void {
@@ -136,10 +146,13 @@ class SyncManagerEngine {
     xpTransaction?: XpTransaction;
     version?: number;
     offline?: boolean;
+    alreadyCompleted?: boolean;
+    error?: string;
   }> {
+    const clientEventId = this.generateEventId();
     const token = this.getAuthToken();
     if (!token || !navigator.onLine) {
-      this.enqueueMutation('COMPLETE_TASK', { taskId });
+      this.enqueueMutation('COMPLETE_TASK', { taskId }, clientEventId);
       return { success: true, offline: true };
     }
 
@@ -149,24 +162,189 @@ class SyncManagerEngine {
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
+          'x-client-event-id': clientEventId,
         },
-        body: JSON.stringify({ taskId }),
+        body: JSON.stringify({
+          taskId,
+          clientEventId,
+          baseVersion: this.getLocalVersion(),
+        }),
       });
 
       if (res.status === 401 || res.status === 403) {
-        return { success: false };
+        return { success: false, error: 'UNAUTHORIZED' };
       }
 
       if (!res.ok) {
-        this.enqueueMutation('COMPLETE_TASK', { taskId });
-        return { success: true, offline: true };
+        if (res.status >= 500 || res.status === 0) {
+          this.enqueueMutation('COMPLETE_TASK', { taskId }, clientEventId);
+          return { success: true, offline: true };
+        }
+        const errData = await res.json().catch(() => ({}));
+        return { success: false, error: errData.error || 'TASK_COMPLETE_FAILED' };
       }
 
       const data = await res.json();
       if (data.version) this.setLocalVersion(data.version);
       return data;
     } catch {
-      this.enqueueMutation('COMPLETE_TASK', { taskId });
+      this.enqueueMutation('COMPLETE_TASK', { taskId }, clientEventId);
+      return { success: true, offline: true };
+    }
+  }
+
+  public async createTask(task: Omit<TaskItem, 'id'> | TaskItem): Promise<{
+    success: boolean;
+    task?: TaskItem;
+    version?: number;
+    offline?: boolean;
+    error?: string;
+  }> {
+    const clientEventId = this.generateEventId();
+    const token = this.getAuthToken();
+    if (!token || !navigator.onLine) {
+      this.enqueueMutation('CREATE_TASK', { task }, clientEventId);
+      return { success: true, offline: true };
+    }
+
+    try {
+      const res = await fetch('/api/domain/tasks/create', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+          'x-client-event-id': clientEventId,
+        },
+        body: JSON.stringify({
+          task,
+          clientEventId,
+          baseVersion: this.getLocalVersion(),
+        }),
+      });
+
+      if (res.status === 401 || res.status === 403) {
+        return { success: false, error: 'UNAUTHORIZED' };
+      }
+
+      if (!res.ok) {
+        if (res.status >= 500 || res.status === 0) {
+          this.enqueueMutation('CREATE_TASK', { task }, clientEventId);
+          return { success: true, offline: true };
+        }
+        const errData = await res.json().catch(() => ({}));
+        return { success: false, error: errData.error || 'TASK_CREATE_FAILED' };
+      }
+
+      const data = await res.json();
+      if (data.version) this.setLocalVersion(data.version);
+      return data;
+    } catch {
+      this.enqueueMutation('CREATE_TASK', { task }, clientEventId);
+      return { success: true, offline: true };
+    }
+  }
+
+  public async updateTask(
+    taskId: string,
+    updates: Partial<TaskItem>
+  ): Promise<{
+    success: boolean;
+    task?: TaskItem;
+    version?: number;
+    offline?: boolean;
+    error?: string;
+  }> {
+    const clientEventId = this.generateEventId();
+    const token = this.getAuthToken();
+    if (!token || !navigator.onLine) {
+      this.enqueueMutation('UPDATE_TASK', { taskId, updates }, clientEventId);
+      return { success: true, offline: true };
+    }
+
+    try {
+      const res = await fetch('/api/domain/tasks/update', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+          'x-client-event-id': clientEventId,
+        },
+        body: JSON.stringify({
+          taskId,
+          updates,
+          clientEventId,
+          baseVersion: this.getLocalVersion(),
+        }),
+      });
+
+      if (res.status === 401 || res.status === 403) {
+        return { success: false, error: 'UNAUTHORIZED' };
+      }
+
+      if (!res.ok) {
+        if (res.status >= 500 || res.status === 0) {
+          this.enqueueMutation('UPDATE_TASK', { taskId, updates }, clientEventId);
+          return { success: true, offline: true };
+        }
+        const errData = await res.json().catch(() => ({}));
+        return { success: false, error: errData.error || 'TASK_UPDATE_FAILED' };
+      }
+
+      const data = await res.json();
+      if (data.version) this.setLocalVersion(data.version);
+      return data;
+    } catch {
+      this.enqueueMutation('UPDATE_TASK', { taskId, updates }, clientEventId);
+      return { success: true, offline: true };
+    }
+  }
+
+  public async deleteTask(taskId: string): Promise<{
+    success: boolean;
+    version?: number;
+    offline?: boolean;
+    error?: string;
+  }> {
+    const clientEventId = this.generateEventId();
+    const token = this.getAuthToken();
+    if (!token || !navigator.onLine) {
+      this.enqueueMutation('DELETE_TASK', { taskId }, clientEventId);
+      return { success: true, offline: true };
+    }
+
+    try {
+      const res = await fetch('/api/domain/tasks/delete', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+          'x-client-event-id': clientEventId,
+        },
+        body: JSON.stringify({
+          taskId,
+          clientEventId,
+          baseVersion: this.getLocalVersion(),
+        }),
+      });
+
+      if (res.status === 401 || res.status === 403) {
+        return { success: false, error: 'UNAUTHORIZED' };
+      }
+
+      if (!res.ok) {
+        if (res.status >= 500 || res.status === 0) {
+          this.enqueueMutation('DELETE_TASK', { taskId }, clientEventId);
+          return { success: true, offline: true };
+        }
+        const errData = await res.json().catch(() => ({}));
+        return { success: false, error: errData.error || 'TASK_DELETE_FAILED' };
+      }
+
+      const data = await res.json();
+      if (data.version) this.setLocalVersion(data.version);
+      return data;
+    } catch {
+      this.enqueueMutation('DELETE_TASK', { taskId }, clientEventId);
       return { success: true, offline: true };
     }
   }
@@ -181,10 +359,13 @@ class SyncManagerEngine {
     xpTransaction?: XpTransaction;
     version?: number;
     offline?: boolean;
+    alreadyCompleted?: boolean;
+    error?: string;
   }> {
+    const clientEventId = this.generateEventId();
     const token = this.getAuthToken();
     if (!token || !navigator.onLine) {
-      this.enqueueMutation('COMPLETE_HABIT', { habitId, date });
+      this.enqueueMutation('COMPLETE_HABIT', { habitId, date }, clientEventId);
       return { success: true, offline: true };
     }
 
@@ -194,24 +375,190 @@ class SyncManagerEngine {
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
+          'x-client-event-id': clientEventId,
         },
-        body: JSON.stringify({ habitId, date }),
+        body: JSON.stringify({
+          habitId,
+          date,
+          clientEventId,
+          baseVersion: this.getLocalVersion(),
+        }),
       });
 
       if (res.status === 401 || res.status === 403) {
-        return { success: false };
+        return { success: false, error: 'UNAUTHORIZED' };
       }
 
       if (!res.ok) {
-        this.enqueueMutation('COMPLETE_HABIT', { habitId, date });
-        return { success: true, offline: true };
+        if (res.status >= 500 || res.status === 0) {
+          this.enqueueMutation('COMPLETE_HABIT', { habitId, date }, clientEventId);
+          return { success: true, offline: true };
+        }
+        const errData = await res.json().catch(() => ({}));
+        return { success: false, error: errData.error || 'HABIT_COMPLETE_FAILED' };
       }
 
       const data = await res.json();
       if (data.version) this.setLocalVersion(data.version);
       return data;
     } catch {
-      this.enqueueMutation('COMPLETE_HABIT', { habitId, date });
+      this.enqueueMutation('COMPLETE_HABIT', { habitId, date }, clientEventId);
+      return { success: true, offline: true };
+    }
+  }
+
+  public async createHabit(habit: Omit<HabitItem, 'id'> | HabitItem): Promise<{
+    success: boolean;
+    habit?: HabitItem;
+    version?: number;
+    offline?: boolean;
+    error?: string;
+  }> {
+    const clientEventId = this.generateEventId();
+    const token = this.getAuthToken();
+    if (!token || !navigator.onLine) {
+      this.enqueueMutation('CREATE_HABIT', { habit }, clientEventId);
+      return { success: true, offline: true };
+    }
+
+    try {
+      const res = await fetch('/api/domain/habits/create', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+          'x-client-event-id': clientEventId,
+        },
+        body: JSON.stringify({
+          habit,
+          clientEventId,
+          baseVersion: this.getLocalVersion(),
+        }),
+      });
+
+      if (res.status === 401 || res.status === 403) {
+        return { success: false, error: 'UNAUTHORIZED' };
+      }
+
+      if (!res.ok) {
+        if (res.status >= 500 || res.status === 0) {
+          this.enqueueMutation('CREATE_HABIT', { habit }, clientEventId);
+          return { success: true, offline: true };
+        }
+        const errData = await res.json().catch(() => ({}));
+        return { success: false, error: errData.error || 'HABIT_CREATE_FAILED' };
+      }
+
+      const data = await res.json();
+      if (data.version) this.setLocalVersion(data.version);
+      return data;
+    } catch {
+      this.enqueueMutation('CREATE_HABIT', { habit }, clientEventId);
+      return { success: true, offline: true };
+    }
+  }
+
+  public async updateHabit(
+    habitId: string,
+    updates: Partial<HabitItem>
+  ): Promise<{
+    success: boolean;
+    habit?: HabitItem;
+    version?: number;
+    offline?: boolean;
+    error?: string;
+  }> {
+    const clientEventId = this.generateEventId();
+    const token = this.getAuthToken();
+    if (!token || !navigator.onLine) {
+      this.enqueueMutation('UPDATE_HABIT', { habitId, updates }, clientEventId);
+      return { success: true, offline: true };
+    }
+
+    try {
+      const res = await fetch('/api/domain/habits/update', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+          'x-client-event-id': clientEventId,
+        },
+        body: JSON.stringify({
+          habitId,
+          updates,
+          clientEventId,
+          baseVersion: this.getLocalVersion(),
+        }),
+      });
+
+      if (res.status === 401 || res.status === 403) {
+        return { success: false, error: 'UNAUTHORIZED' };
+      }
+
+      if (!res.ok) {
+        if (res.status >= 500 || res.status === 0) {
+          this.enqueueMutation('UPDATE_HABIT', { habitId, updates }, clientEventId);
+          return { success: true, offline: true };
+        }
+        const errData = await res.json().catch(() => ({}));
+        return { success: false, error: errData.error || 'HABIT_UPDATE_FAILED' };
+      }
+
+      const data = await res.json();
+      if (data.version) this.setLocalVersion(data.version);
+      return data;
+    } catch {
+      this.enqueueMutation('UPDATE_HABIT', { habitId, updates }, clientEventId);
+      return { success: true, offline: true };
+    }
+  }
+
+  public async deleteHabit(habitId: string): Promise<{
+    success: boolean;
+    version?: number;
+    offline?: boolean;
+    error?: string;
+  }> {
+    const clientEventId = this.generateEventId();
+    const token = this.getAuthToken();
+    if (!token || !navigator.onLine) {
+      this.enqueueMutation('DELETE_HABIT', { habitId }, clientEventId);
+      return { success: true, offline: true };
+    }
+
+    try {
+      const res = await fetch('/api/domain/habits/delete', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+          'x-client-event-id': clientEventId,
+        },
+        body: JSON.stringify({
+          habitId,
+          clientEventId,
+          baseVersion: this.getLocalVersion(),
+        }),
+      });
+
+      if (res.status === 401 || res.status === 403) {
+        return { success: false, error: 'UNAUTHORIZED' };
+      }
+
+      if (!res.ok) {
+        if (res.status >= 500 || res.status === 0) {
+          this.enqueueMutation('DELETE_HABIT', { habitId }, clientEventId);
+          return { success: true, offline: true };
+        }
+        const errData = await res.json().catch(() => ({}));
+        return { success: false, error: errData.error || 'HABIT_DELETE_FAILED' };
+      }
+
+      const data = await res.json();
+      if (data.version) this.setLocalVersion(data.version);
+      return data;
+    } catch {
+      this.enqueueMutation('DELETE_HABIT', { habitId }, clientEventId);
       return { success: true, offline: true };
     }
   }
@@ -227,10 +574,12 @@ class SyncManagerEngine {
     xpTransaction?: XpTransaction;
     version?: number;
     offline?: boolean;
+    error?: string;
   }> {
+    const clientEventId = this.generateEventId();
     const token = this.getAuthToken();
     if (!token || !navigator.onLine) {
-      this.enqueueMutation('UPDATE_GOAL_PROGRESS', { goalId, progress, milestoneId });
+      this.enqueueMutation('UPDATE_GOAL_PROGRESS', { goalId, progress, milestoneId }, clientEventId);
       return { success: true, offline: true };
     }
 
@@ -240,24 +589,35 @@ class SyncManagerEngine {
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
+          'x-client-event-id': clientEventId,
         },
-        body: JSON.stringify({ goalId, progress, milestoneId }),
+        body: JSON.stringify({
+          goalId,
+          progress,
+          milestoneId,
+          clientEventId,
+          baseVersion: this.getLocalVersion(),
+        }),
       });
 
       if (res.status === 401 || res.status === 403) {
-        return { success: false };
+        return { success: false, error: 'UNAUTHORIZED' };
       }
 
       if (!res.ok) {
-        this.enqueueMutation('UPDATE_GOAL_PROGRESS', { goalId, progress, milestoneId });
-        return { success: true, offline: true };
+        if (res.status >= 500 || res.status === 0) {
+          this.enqueueMutation('UPDATE_GOAL_PROGRESS', { goalId, progress, milestoneId }, clientEventId);
+          return { success: true, offline: true };
+        }
+        const errData = await res.json().catch(() => ({}));
+        return { success: false, error: errData.error || 'GOAL_PROGRESS_FAILED' };
       }
 
       const data = await res.json();
       if (data.version) this.setLocalVersion(data.version);
       return data;
     } catch {
-      this.enqueueMutation('UPDATE_GOAL_PROGRESS', { goalId, progress, milestoneId });
+      this.enqueueMutation('UPDATE_GOAL_PROGRESS', { goalId, progress, milestoneId }, clientEventId);
       return { success: true, offline: true };
     }
   }
@@ -326,32 +686,35 @@ class SyncManagerEngine {
     for (const mutation of queue) {
       try {
         let endpoint = '';
-        let body: any = {};
+        let body: any = { ...mutation.payload, clientEventId: mutation.clientEventId };
 
         switch (mutation.type) {
           case 'COMPLETE_TASK':
             endpoint = '/api/domain/tasks/complete';
-            body = { taskId: mutation.payload.taskId };
-            break;
-          case 'COMPLETE_HABIT':
-            endpoint = '/api/domain/habits/complete';
-            body = { habitId: mutation.payload.habitId, date: mutation.payload.date };
-            break;
-          case 'UPDATE_GOAL_PROGRESS':
-            endpoint = '/api/domain/goals/progress';
-            body = mutation.payload;
             break;
           case 'CREATE_TASK':
             endpoint = '/api/domain/tasks/create';
-            body = mutation.payload;
             break;
           case 'UPDATE_TASK':
             endpoint = '/api/domain/tasks/update';
-            body = mutation.payload;
             break;
           case 'DELETE_TASK':
             endpoint = '/api/domain/tasks/delete';
-            body = mutation.payload;
+            break;
+          case 'COMPLETE_HABIT':
+            endpoint = '/api/domain/habits/complete';
+            break;
+          case 'CREATE_HABIT':
+            endpoint = '/api/domain/habits/create';
+            break;
+          case 'UPDATE_HABIT':
+            endpoint = '/api/domain/habits/update';
+            break;
+          case 'DELETE_HABIT':
+            endpoint = '/api/domain/habits/delete';
+            break;
+          case 'UPDATE_GOAL_PROGRESS':
+            endpoint = '/api/domain/goals/progress';
             break;
           default:
             break;
@@ -363,6 +726,7 @@ class SyncManagerEngine {
             headers: {
               'Content-Type': 'application/json',
               Authorization: `Bearer ${token}`,
+              'x-client-event-id': mutation.clientEventId,
             },
             body: JSON.stringify(body),
           });

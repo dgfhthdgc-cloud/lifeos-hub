@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 
 export function PlannerView() {
-  const { addXp } = useAuth();
+  const { isAuthenticated, isDemoMode, setAuthoritativeUser, addXp } = useAuth();
   const { showToast } = useNotifications();
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [selectedFilter, setSelectedFilter] = useState<'all' | 'today' | 'upcoming' | 'completed'>('all');
@@ -39,26 +39,80 @@ export function PlannerView() {
     setTasks(Storage.getTasks());
   }, []);
 
-  const handleToggleTask = (id: string) => {
-    const res = Storage.toggleTask(id);
-    if (res.task) {
-      setTasks(Storage.getTasks());
-      if (res.xpAwarded > 0) {
-        // Trigger server-authoritative task completion & XP award
-        syncManager.completeTask(id).catch(() => {});
-        addXp(res.xpAwarded, `Completed task: ${res.task.title}`);
-        showToast(`Task completed! +${res.xpAwarded} XP`, 'success');
+  const handleToggleTask = async (id: string) => {
+    const task = tasks.find((t) => t.id === id);
+    if (!task) return;
+
+    if (isAuthenticated && !isDemoMode) {
+      // If task was completed, uncomplete it
+      if (task.completed) {
+        const updated = tasks.map((t) =>
+          t.id === id ? { ...t, completed: false, status: 'todo' as const } : t
+        );
+        setTasks(updated);
+        Storage.setTasks(updated);
+        syncManager.updateTask(id, { completed: false, status: 'todo' }).catch(() => {});
+        return;
+      }
+
+      // Optimistically update for snappy UI
+      const optimisticTasks = tasks.map((t) =>
+        t.id === id ? { ...t, completed: true, status: 'completed' as const } : t
+      );
+      setTasks(optimisticTasks);
+
+      try {
+        const res = await syncManager.completeTask(id);
+        if (res.success) {
+          if (res.task) {
+            const finalTasks = tasks.map((t) => (t.id === id ? res.task! : t));
+            setTasks(finalTasks);
+            Storage.setTasks(finalTasks);
+          } else {
+            Storage.setTasks(optimisticTasks);
+          }
+          if (res.profile) {
+            setAuthoritativeUser(res.profile);
+          }
+          if (res.xpTransaction) {
+            showToast(`Task completed! +${res.xpTransaction.amount} XP`, 'success');
+          } else if (res.offline) {
+            showToast('Task completed (queued offline)', 'info');
+          } else if (res.alreadyCompleted) {
+            showToast('Task already marked completed', 'info');
+          }
+        } else {
+          // Revert optimistic update
+          setTasks(tasks);
+          showToast(res.error || 'Failed to complete task', 'error');
+        }
+      } catch {
+        setTasks(tasks);
+        showToast('Network error completing task', 'error');
+      }
+    } else {
+      // Demo / Guest mode
+      const res = Storage.toggleTask(id);
+      if (res.task) {
+        setTasks(Storage.getTasks());
+        if (res.xpAwarded > 0) {
+          addXp(res.xpAwarded, `Completed task: ${res.task.title}`);
+          showToast(`Task completed! +${res.xpAwarded} XP`, 'success');
+        }
       }
     }
   };
 
   const handleDeleteTask = (id: string) => {
+    if (isAuthenticated && !isDemoMode) {
+      syncManager.deleteTask(id).catch(() => {});
+    }
     Storage.deleteTask(id);
     setTasks(Storage.getTasks());
     showToast('Task removed', 'info');
   };
 
-  const handleCreateTask = (e: React.FormEvent) => {
+  const handleCreateTask = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim()) return;
 
@@ -80,9 +134,18 @@ export function PlannerView() {
       createdAt: new Date().toISOString(),
     };
 
-    const updated = [newTask, ...tasks];
-    Storage.setTasks(updated);
-    setTasks(updated);
+    if (isAuthenticated && !isDemoMode) {
+      const res = await syncManager.createTask(newTask);
+      const taskToAdd = res.task || newTask;
+      const updated = [taskToAdd, ...tasks];
+      Storage.setTasks(updated);
+      setTasks(updated);
+    } else {
+      const updated = [newTask, ...tasks];
+      Storage.setTasks(updated);
+      setTasks(updated);
+    }
+
     setShowAddModal(false);
     setNewTitle('');
     setNewTags('');

@@ -54,23 +54,24 @@ export interface DatabaseAdapter {
   syncUserState(userId: string, syncPayload: { baseVersion?: number; changes?: Partial<UserDatabaseState> }): SyncResult;
   
   // Authoritative Domain Actions
-  completeTask(userId: string, taskId: string): TaskCompletionResult;
-  createTask(userId: string, task: Omit<TaskItem, 'id'>): { success: boolean; task: TaskItem; version: number };
-  updateTask(userId: string, taskId: string, updates: Partial<TaskItem>): { success: boolean; task?: TaskItem; version: number; error?: string };
-  deleteTask(userId: string, taskId: string): { success: boolean; version: number; error?: string };
+  completeTask(userId: string, taskId: string, clientEventId?: string, baseVersion?: number): TaskCompletionResult;
+  createTask(userId: string, task: Omit<TaskItem, 'id'>, clientEventId?: string, baseVersion?: number): { success: boolean; task: TaskItem; version: number };
+  updateTask(userId: string, taskId: string, updates: Partial<TaskItem>, clientEventId?: string, baseVersion?: number): { success: boolean; task?: TaskItem; version: number; error?: string };
+  deleteTask(userId: string, taskId: string, clientEventId?: string, baseVersion?: number): { success: boolean; version: number; error?: string };
 
-  completeHabit(userId: string, habitId: string, dateStr?: string): HabitCompletionResult;
-  createHabit(userId: string, habit: Omit<HabitItem, 'id'>): { success: boolean; habit: HabitItem; version: number };
-  updateHabit(userId: string, habitId: string, updates: Partial<HabitItem>): { success: boolean; habit?: HabitItem; version: number; error?: string };
-  deleteHabit(userId: string, habitId: string): { success: boolean; version: number; error?: string };
+  completeHabit(userId: string, habitId: string, dateStr?: string, clientEventId?: string, baseVersion?: number): HabitCompletionResult;
+  createHabit(userId: string, habit: Omit<HabitItem, 'id'>, clientEventId?: string, baseVersion?: number): { success: boolean; habit: HabitItem; version: number };
+  updateHabit(userId: string, habitId: string, updates: Partial<HabitItem>, clientEventId?: string, baseVersion?: number): { success: boolean; habit?: HabitItem; version: number; error?: string };
+  deleteHabit(userId: string, habitId: string, clientEventId?: string, baseVersion?: number): { success: boolean; version: number; error?: string };
 
-  updateGoalProgress(userId: string, goalId: string, progress: number, milestoneId?: string): GoalProgressResult;
+  updateGoalProgress(userId: string, goalId: string, progress: number, milestoneId?: string, clientEventId?: string, baseVersion?: number): GoalProgressResult;
 
   recordXpTransaction(
     userId: string,
     amount: number,
     reason: string,
-    category?: XpCategory
+    category?: XpCategory,
+    clientEventId?: string
   ): { profile: UserProfile; transaction: XpTransaction; version: number };
 
   addAiMessage(userId: string, message: AIChatMessage): void;

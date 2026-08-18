@@ -8,7 +8,7 @@ import { Target, Plus, CheckCircle2, Circle, Trophy, Calendar, Sparkles, Trendin
 import { Progress } from '../ui/Progress';
 
 export function GoalsView() {
-  const { addXp } = useAuth();
+  const { isAuthenticated, isDemoMode, setAuthoritativeUser, addXp } = useAuth();
   const { showToast } = useNotifications();
   const [goals, setGoals] = useState<GoalItem[]>([]);
   const [pillars, setPillars] = useState<FiveYearPillar[]>([]);
@@ -27,13 +27,65 @@ export function GoalsView() {
     setPillars(Storage.getFiveYearPlan());
   }, []);
 
-  const handleToggleMilestone = (goalId: string, milestoneId: string) => {
-    const res = Storage.toggleGoalMilestone(goalId, milestoneId);
-    if (res.goal) {
-      setGoals(Storage.getGoals());
-      if (res.xpAwarded > 0) {
-        addXp(res.xpAwarded, `Goal milestone achieved: ${res.goal.title}`);
-        showToast(`Milestone completed! +${res.xpAwarded} XP`, 'success');
+  const handleToggleMilestone = async (goalId: string, milestoneId: string) => {
+    const goal = goals.find((g) => g.id === goalId);
+    if (!goal) return;
+
+    if (isAuthenticated && !isDemoMode) {
+      // Calculate optimistic progress
+      const targetMilestone = goal.milestones.find((m) => m.id === milestoneId);
+      const isCompleting = !targetMilestone?.completed;
+      const updatedMilestones = goal.milestones.map((m) =>
+        m.id === milestoneId ? { ...m, completed: isCompleting } : m
+      );
+      const compCount = updatedMilestones.filter((m) => m.completed).length;
+      const calcProgress = Math.round((compCount / updatedMilestones.length) * 100);
+
+      const optimisticGoal: GoalItem = {
+        ...goal,
+        milestones: updatedMilestones,
+        progress: calcProgress,
+        completed: calcProgress === 100,
+      };
+
+      const optimisticGoals = goals.map((g) => (g.id === goalId ? optimisticGoal : g));
+      setGoals(optimisticGoals);
+
+      try {
+        const res = await syncManager.updateGoalProgress(goalId, calcProgress, milestoneId);
+        if (res.success) {
+          if (res.goal) {
+            const finalGoals = goals.map((g) => (g.id === goalId ? res.goal! : g));
+            setGoals(finalGoals);
+            Storage.setGoals(finalGoals);
+          } else {
+            Storage.setGoals(optimisticGoals);
+          }
+          if (res.profile) {
+            setAuthoritativeUser(res.profile);
+          }
+          if (res.xpTransaction) {
+            showToast(`Milestone completed! +${res.xpTransaction.amount} XP`, 'success');
+          } else if (res.offline) {
+            showToast('Goal progress saved (offline queue)', 'info');
+          }
+        } else {
+          setGoals(goals);
+          showToast(res.error || 'Failed to update milestone', 'error');
+        }
+      } catch {
+        setGoals(goals);
+        showToast('Network error updating goal progress', 'error');
+      }
+    } else {
+      // Demo / Guest mode
+      const res = Storage.toggleGoalMilestone(goalId, milestoneId);
+      if (res.goal) {
+        setGoals(Storage.getGoals());
+        if (res.xpAwarded > 0) {
+          addXp(res.xpAwarded, `Goal milestone achieved: ${res.goal.title}`);
+          showToast(`Milestone completed! +${res.xpAwarded} XP`, 'success');
+        }
       }
     }
   };
