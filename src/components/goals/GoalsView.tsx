@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { GoalItem, FiveYearPillar } from '../../types';
 import { Storage } from '../../lib/storage';
+import { syncManager } from '../../lib/SyncManager';
 import { useAuth } from '../../context/AuthContext';
 import { useNotifications } from '../../context/NotificationContext';
 import { Target, Plus, CheckCircle2, Circle, Trophy, Calendar, Sparkles, TrendingUp, Layers } from 'lucide-react';

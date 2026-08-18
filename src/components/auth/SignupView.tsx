@@ -13,13 +13,21 @@ export function SignupView({ onNavigate }: SignupViewProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setErrorMessage(null);
     setLoading(true);
     try {
-      await signup(email, name, password);
-      onNavigate('/dashboard');
+      const ok = await signup(email, name, password);
+      if (ok) {
+        onNavigate('/dashboard');
+      } else {
+        setErrorMessage('Failed to create account. Ensure password is at least 6 characters and email is valid.');
+      }
+    } catch {
+      setErrorMessage('Registration request failed. Please check your connection.');
     } finally {
       setLoading(false);
     }
@@ -44,6 +52,12 @@ export function SignupView({ onNavigate }: SignupViewProps) {
             <p className="text-xs text-neutral-400 font-mono">Create your Sovereign Life Matrix</p>
           </div>
         </div>
+
+        {errorMessage && (
+          <div className="mb-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs font-mono">
+            {errorMessage}
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>

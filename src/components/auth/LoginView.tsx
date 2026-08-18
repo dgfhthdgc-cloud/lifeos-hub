@@ -12,13 +12,21 @@ export function LoginView({ onNavigate }: LoginViewProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setErrorMessage(null);
     setLoading(true);
     try {
-      await login(email, password);
-      onNavigate('/dashboard');
+      const ok = await login(email, password);
+      if (ok) {
+        onNavigate('/dashboard');
+      } else {
+        setErrorMessage('Invalid email or password. Please verify your credentials or explore the demo.');
+      }
+    } catch {
+      setErrorMessage('Authentication request failed. Please check your connection.');
     } finally {
       setLoading(false);
     }
@@ -51,6 +59,12 @@ export function LoginView({ onNavigate }: LoginViewProps) {
             <p className="text-xs text-neutral-400 font-mono">Personal Intelligence & Execution Engine</p>
           </div>
         </div>
+
+        {errorMessage && (
+          <div className="mb-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs font-mono">
+            {errorMessage}
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>

@@ -1,7 +1,40 @@
 import crypto from 'crypto';
 import { AuthTokenPayload } from './types';
 
-const TOKEN_SECRET = process.env.AUTH_SECRET || 'lifeos-secure-session-secret-key-32-chars-long!';
+let cachedSecret: string | null = null;
+let devSecretWarningLogged = false;
+
+export function getAuthSecret(): string {
+  if (cachedSecret) return cachedSecret;
+
+  const envSecret = process.env.AUTH_SECRET;
+  if (envSecret && envSecret.trim().length >= 16) {
+    cachedSecret = envSecret.trim();
+    return cachedSecret;
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      'FATAL SECURITY CONFIGURATION: AUTH_SECRET environment variable is missing or too short in production. Server startup aborted.'
+    );
+  }
+
+  // Development fallback: Generate cryptographically secure ephemeral secret in-memory
+  if (!devSecretWarningLogged) {
+    console.warn(
+      '[AUTH SECURITY WARNING] AUTH_SECRET environment variable is not set. Using dynamically generated in-memory development secret. Sessions will reset when the server restarts.'
+    );
+    devSecretWarningLogged = true;
+  }
+
+  cachedSecret = crypto.randomBytes(32).toString('hex');
+  return cachedSecret;
+}
+
+export function validateAuthSecretOnStartup(): void {
+  getAuthSecret();
+}
+
 const TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
 
 export function hashPassword(password: string, salt?: string): { hash: string; salt: string } {
@@ -14,17 +47,22 @@ export function hashPassword(password: string, salt?: string): { hash: string; s
 }
 
 export function verifyPassword(password: string, hash: string, salt: string): boolean {
-  const { hash: computedHash } = hashPassword(password, salt);
-  return crypto.timingSafeEqual(Buffer.from(computedHash, 'hex'), Buffer.from(hash, 'hex'));
+  try {
+    const { hash: computedHash } = hashPassword(password, salt);
+    return crypto.timingSafeEqual(Buffer.from(computedHash, 'hex'), Buffer.from(hash, 'hex'));
+  } catch {
+    return false;
+  }
 }
 
 export function generateAuthToken(payload: Omit<AuthTokenPayload, 'exp'>): string {
+  const secret = getAuthSecret();
   const exp = Date.now() + TOKEN_TTL_MS;
   const fullPayload: AuthTokenPayload = { ...payload, exp };
   const payloadBase64 = Buffer.from(JSON.stringify(fullPayload)).toString('base64url');
-  
+
   const signature = crypto
-    .createHmac('sha256', TOKEN_SECRET)
+    .createHmac('sha256', secret)
     .update(payloadBase64)
     .digest('base64url');
 
@@ -33,11 +71,12 @@ export function generateAuthToken(payload: Omit<AuthTokenPayload, 'exp'>): strin
 
 export function verifyAuthToken(token: string): AuthTokenPayload | null {
   try {
+    const secret = getAuthSecret();
     const [payloadBase64, signature] = token.split('.');
     if (!payloadBase64 || !signature) return null;
 
     const expectedSignature = crypto
-      .createHmac('sha256', TOKEN_SECRET)
+      .createHmac('sha256', secret)
       .update(payloadBase64)
       .digest('base64url');
 
@@ -51,8 +90,8 @@ export function verifyAuthToken(token: string): AuthTokenPayload | null {
     const payloadJson = Buffer.from(payloadBase64, 'base64url').toString('utf-8');
     const payload: AuthTokenPayload = JSON.parse(payloadJson);
 
-    if (payload.exp < Date.now()) {
-      return null; // Expired
+    if (!payload.userId || !payload.exp || payload.exp < Date.now()) {
+      return null; // Invalid or expired
     }
 
     return payload;

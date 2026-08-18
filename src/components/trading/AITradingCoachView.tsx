@@ -30,11 +30,15 @@ export const AITradingCoachView: React.FC<AITradingCoachViewProps> = ({
   const handleGenerateAnalysis = async (promptOverride?: string) => {
     setIsLoading(true);
     try {
+      const token = localStorage.getItem('lifeos_auth_token');
       const resp = await fetch('/api/ai/analyze-trading', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
-          journalHistory: journal.slice(0, 15),
+          journalHistory: journal.slice(0, 10),
           currentSymbol: currentSymbol.symbol,
           marketContext: {
             price: currentSymbol.currentPrice,
@@ -59,6 +63,8 @@ export const AITradingCoachView: React.FC<AITradingCoachViewProps> = ({
           ]);
           setCustomQuestion('');
         }
+      } else {
+        throw new Error('Analysis endpoint returned non-200');
       }
     } catch {
       setAnalysisText(

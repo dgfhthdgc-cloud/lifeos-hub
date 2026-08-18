@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { TaskItem, TaskPriority, TaskCategory } from '../../types';
 import { Storage } from '../../lib/storage';
+import { syncManager } from '../../lib/SyncManager';
 import { useAuth } from '../../context/AuthContext';
 import { useNotifications } from '../../context/NotificationContext';
 import {
@@ -43,6 +44,8 @@ export function PlannerView() {
     if (res.task) {
       setTasks(Storage.getTasks());
       if (res.xpAwarded > 0) {
+        // Trigger server-authoritative task completion & XP award
+        syncManager.completeTask(id).catch(() => {});
         addXp(res.xpAwarded, `Completed task: ${res.task.title}`);
         showToast(`Task completed! +${res.xpAwarded} XP`, 'success');
       }

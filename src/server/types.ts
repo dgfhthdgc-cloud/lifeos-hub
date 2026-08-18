@@ -10,6 +10,7 @@ export interface AuthUserRecord {
 }
 
 export interface UserDatabaseState {
+  version: number;
   profile: UserProfile;
   tasks: TaskItem[];
   habits: HabitItem[];

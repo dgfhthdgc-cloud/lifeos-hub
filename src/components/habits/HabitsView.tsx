@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { HabitItem, StreakSystemData } from '../../types';
 import { Storage } from '../../lib/storage';
+import { syncManager } from '../../lib/SyncManager';
 import { useAuth } from '../../context/AuthContext';
 import { useNotifications } from '../../context/NotificationContext';
 import {
@@ -41,6 +42,8 @@ export function HabitsView() {
       setHabits(Storage.getHabits());
       setStreakData(Storage.getStreakData());
       if (res.xpAwarded > 0) {
+        // Trigger server-authoritative habit completion & XP award
+        syncManager.completeHabit(id, todayStr).catch(() => {});
         addXp(res.xpAwarded, `Completed habit: ${res.habit.name}`);
         showToast(`Habit logged! +${res.xpAwarded} XP (Streak: ${res.habit.currentStreak} days)`, 'success');
       }

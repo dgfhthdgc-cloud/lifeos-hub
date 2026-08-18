@@ -6,10 +6,11 @@ import { getXpRequiredForLevel, LEVEL_RANKS } from '../lib/gamification';
 interface AuthContextType {
   user: UserProfile | null;
   isAuthenticated: boolean;
+  isDemoMode: boolean;
   isLoading: boolean;
-  login: (email?: string, password?: string) => Promise<boolean>;
+  login: (email: string, password: string) => Promise<boolean>;
   loginAsDemo: () => void;
-  signup: (email: string, name: string, password?: string) => Promise<boolean>;
+  signup: (email: string, name: string, password: string) => Promise<boolean>;
   logout: () => void;
   updateUser: (updates: Partial<UserProfile>) => void;
   addXp: (amount: number, reason?: string) => void;
@@ -19,144 +20,145 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(true);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [isDemoMode, setIsDemoMode] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
   // Validate session on mount
   useEffect(() => {
     async function initAuth() {
       const token = localStorage.getItem('lifeos_auth_token');
+      const isDemo = localStorage.getItem('lifeos_demo_mode') === 'true';
+
+      // Explicit Demo/Guest mode
+      if (isDemo) {
+        const savedDemo = Storage.getUser() || DEMO_USER;
+        setUser(savedDemo);
+        setIsAuthenticated(true);
+        setIsDemoMode(true);
+        setIsLoading(false);
+        return;
+      }
+
       if (token) {
         try {
           const resp = await fetch('/api/auth/me', {
             headers: { Authorization: `Bearer ${token}` },
           });
+
           if (resp.ok) {
             const data = await resp.json();
             if (data.user) {
               setUser(data.user);
               Storage.setUser(data.user);
               setIsAuthenticated(true);
+              setIsDemoMode(false);
               setIsLoading(false);
               return;
             }
           }
+
+          // Invalid or expired token received from server
+          if (resp.status === 401 || resp.status === 403) {
+            localStorage.removeItem('lifeos_auth_token');
+            setUser(null);
+            setIsAuthenticated(false);
+            setIsDemoMode(false);
+            setIsLoading(false);
+            return;
+          }
         } catch {
-          // fallback to local cache
+          // In case of offline network failure while holding a previously valid token
+          const savedUser = Storage.getUser();
+          if (savedUser && savedUser.id !== 'usr_init_1') {
+            setUser(savedUser);
+            setIsAuthenticated(true);
+            setIsDemoMode(false);
+            setIsLoading(false);
+            return;
+          }
         }
       }
 
-      // Check local storage cache
-      try {
-        const savedUser = Storage.getUser();
-        if (savedUser) {
-          setUser(savedUser);
-          setIsAuthenticated(true);
-        } else {
-          setUser(INITIAL_USER);
-          Storage.setUser(INITIAL_USER);
-          setIsAuthenticated(true);
-        }
-      } catch {
-        setUser(INITIAL_USER);
-        setIsAuthenticated(true);
-      } finally {
-        setIsLoading(false);
-      }
+      // No valid token and not demo mode -> Unauthenticated
+      setUser(null);
+      setIsAuthenticated(false);
+      setIsDemoMode(false);
+      setIsLoading(false);
     }
 
     initAuth();
   }, []);
 
-  const login = async (email?: string, password?: string): Promise<boolean> => {
+  const login = async (email: string, password: string): Promise<boolean> => {
     setIsLoading(true);
     try {
-      if (email && password) {
-        const resp = await fetch('/api/auth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password }),
-        });
+      if (!email || !password) return false;
 
-        if (resp.ok) {
-          const data = await resp.json();
-          if (data.token && data.user) {
-            localStorage.setItem('lifeos_auth_token', data.token);
-            setUser(data.user);
-            Storage.setUser(data.user);
-            setIsAuthenticated(true);
-            return true;
-          }
+      const resp = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.token && data.user) {
+          localStorage.setItem('lifeos_auth_token', data.token);
+          localStorage.removeItem('lifeos_demo_mode');
+          setUser(data.user);
+          Storage.setUser(data.user);
+          setIsAuthenticated(true);
+          setIsDemoMode(false);
+          return true;
         }
       }
 
-      // Fallback/Local login support
-      let loggedUser = Storage.getUser();
-      if (!loggedUser || (email && loggedUser.email !== email)) {
-        loggedUser = {
-          ...INITIAL_USER,
-          email: email || 'alex@lifeos.internal',
-          name: email ? email.split('@')[0] : 'Alex',
-        };
-      }
-      Storage.setUser(loggedUser);
-      setUser(loggedUser);
-      setIsAuthenticated(true);
-      return true;
+      // Explicit authentication failure - Never auto-authenticate
+      return false;
+    } catch {
+      return false;
     } finally {
       setIsLoading(false);
     }
   };
 
   const loginAsDemo = () => {
+    localStorage.setItem('lifeos_demo_mode', 'true');
+    localStorage.removeItem('lifeos_auth_token');
     Storage.setUser(DEMO_USER);
     setUser(DEMO_USER);
     setIsAuthenticated(true);
+    setIsDemoMode(true);
   };
 
-  const signup = async (email: string, name: string, password?: string): Promise<boolean> => {
+  const signup = async (email: string, name: string, password: string): Promise<boolean> => {
     setIsLoading(true);
     try {
-      if (email && password) {
-        const resp = await fetch('/api/auth/signup', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, name, password }),
-        });
+      if (!email || !password || password.length < 6) return false;
 
-        if (resp.ok) {
-          const data = await resp.json();
-          if (data.token && data.user) {
-            localStorage.setItem('lifeos_auth_token', data.token);
-            setUser(data.user);
-            Storage.setUser(data.user);
-            setIsAuthenticated(true);
-            return true;
-          }
+      const resp = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, name, password }),
+      });
+
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.token && data.user) {
+          localStorage.setItem('lifeos_auth_token', data.token);
+          localStorage.removeItem('lifeos_demo_mode');
+          setUser(data.user);
+          Storage.setUser(data.user);
+          setIsAuthenticated(true);
+          setIsDemoMode(false);
+          return true;
         }
       }
 
-      const newUser: UserProfile = {
-        id: `usr_${Date.now()}`,
-        email,
-        name,
-        title: 'Initiate Apprentice',
-        level: 1,
-        currentXp: 0,
-        nextLevelXp: 400,
-        streakDays: 0,
-        createdAt: new Date().toISOString(),
-        settings: {
-          theme: 'dark',
-          notificationsEnabled: true,
-          aiInsightsEnabled: true,
-          compactView: false,
-        },
-      };
-      Storage.setUser(newUser);
-      setUser(newUser);
-      setIsAuthenticated(true);
-      return true;
+      return false;
+    } catch {
+      return false;
     } finally {
       setIsLoading(false);
     }
@@ -164,7 +166,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = () => {
     localStorage.removeItem('lifeos_auth_token');
+    localStorage.removeItem('lifeos_demo_mode');
     setIsAuthenticated(false);
+    setIsDemoMode(false);
     setUser(null);
   };
 
