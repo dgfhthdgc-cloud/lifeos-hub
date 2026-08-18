@@ -162,7 +162,12 @@ export const TradingChartCanvas: React.FC<TradingChartCanvasProps> = ({
       for (const entry of entries) {
         const { width, height } = entry.contentRect;
         if (width > 0 && height > 0) {
-          setCanvasDimensions({ width: Math.floor(width), height: Math.floor(height) });
+          const nextWidth = Math.floor(width);
+          const nextHeight = Math.floor(height);
+          setCanvasDimensions((prev) => {
+            if (prev.width === nextWidth && prev.height === nextHeight) return prev;
+            return { width: nextWidth, height: nextHeight };
+          });
         }
       }
     });

@@ -33,17 +33,17 @@ export function LiveOrderConfirmationModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-neutral-950/70 backdrop-blur-xs animate-in fade-in duration-200">
       <div className="w-full max-w-lg bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl shadow-2xl overflow-hidden">
         {/* Header */}
-        <div className={`p-5 flex items-center justify-between border-b ${isLive ? 'bg-rose-500/10 border-rose-500/20' : 'bg-neutral-50 dark:bg-neutral-800/60 border-neutral-200 dark:border-neutral-800'}`}>
+        <div className="p-5 flex items-center justify-between border-b bg-emerald-500/10 border-emerald-500/20">
           <div className="flex items-center gap-3">
-            <div className={`p-2 rounded-xl ${isLive ? 'bg-rose-500 text-white' : 'bg-cyan-500 text-neutral-950'}`}>
-              {isLive ? <ShieldAlert className="w-5 h-5" /> : <AlertTriangle className="w-5 h-5" />}
+            <div className="p-2 rounded-xl bg-emerald-500 text-neutral-950">
+              <ShieldAlert className="w-5 h-5" />
             </div>
             <div>
               <h3 className="text-base font-bold text-neutral-900 dark:text-white">
-                {isLive ? 'Confirm LIVE Market Execution' : 'Confirm Order Parameters'}
+                Confirm Paper Order Execution
               </h3>
               <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                {isLive ? 'Real institutional broker DMA execution' : 'Paper trading execution engine'}
+                High-fidelity simulation engine with risk validation
               </p>
             </div>
           </div>
@@ -158,14 +158,10 @@ export function LiveOrderConfirmationModal({
           </button>
           <button
             onClick={onConfirm}
-            disabled={!riskResult.allowed && isLive}
-            className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all shadow-md active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${
-              isLive
-                ? 'bg-rose-500 hover:bg-rose-600 text-white shadow-rose-500/20'
-                : 'bg-emerald-500 hover:bg-emerald-400 text-neutral-950 shadow-emerald-500/20'
-            }`}
+            disabled={!riskResult.allowed}
+            className="px-5 py-2.5 rounded-xl text-xs font-bold transition-all shadow-md active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed bg-emerald-500 hover:bg-emerald-400 text-neutral-950 shadow-emerald-500/20"
           >
-            {isLive ? 'Confirm LIVE Order Execution' : 'Execute Paper Order'}
+            Execute Paper Order
           </button>
         </div>
       </div>

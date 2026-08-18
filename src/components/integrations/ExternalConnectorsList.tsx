@@ -42,8 +42,8 @@ export function ExternalConnectorsList({
         <h3 className="text-xs font-bold uppercase tracking-wider text-neutral-400 dark:text-neutral-500 font-mono">
           Connected External Integrations & Webhooks
         </h3>
-        <span className="text-[11px] text-neutral-400">
-          TLS 1.3 Encrypted Bi-Directional Bridge
+        <span className="text-[11px] text-neutral-400 font-mono">
+          Connector Hub • Demo / Mock Telemetry
         </span>
       </div>
 

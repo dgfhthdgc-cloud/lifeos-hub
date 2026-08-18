@@ -887,7 +887,6 @@ export const Storage = {
       if (h.id === id) {
         const isCurrentlyCompleted = h.history.includes(dateStr);
         let newHistory: string[];
-        let newStreak = h.currentStreak;
 
         if (isCurrentlyCompleted) {
           newHistory = h.history.filter((d) => d !== dateStr);

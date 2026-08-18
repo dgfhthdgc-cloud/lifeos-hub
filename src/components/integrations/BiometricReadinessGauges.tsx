@@ -16,6 +16,7 @@ export function BiometricReadinessGauges({ metrics }: BiometricReadinessGaugesPr
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-sky-500/15 border border-sky-500/25 text-sky-700 dark:text-sky-300 text-xs font-bold font-mono">
             <Activity className="w-3.5 h-3.5" />
             <span>Biometric Readiness Engine</span>
+            <span className="text-[10px] px-1.5 py-0.2 rounded bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 font-normal">SIMULATED TELEMETRY</span>
           </div>
 
           <div className="flex items-center gap-3 flex-wrap">

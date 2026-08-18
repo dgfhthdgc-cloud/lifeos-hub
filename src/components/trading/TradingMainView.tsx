@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   MarketSymbol,
   CandleStick,
@@ -145,9 +145,14 @@ export const TradingMainView: React.FC = () => {
     setIsReplayPlaying(false);
   }, [loadHistoricalBars, currentSymbol.symbol]);
 
+  const currentSymbolRef = useRef(currentSymbol.symbol);
+  useEffect(() => {
+    currentSymbolRef.current = currentSymbol.symbol;
+  }, [currentSymbol.symbol]);
+
   // Subscribe to real-time Quotes for all symbols
   useEffect(() => {
-    const symbolList = symbols.map((s) => s.symbol);
+    const symbolList = INITIAL_SYMBOLS.map((s) => s.symbol);
     const unsubQuotes = MarketDataManager.subscribeQuotes(symbolList, (quote: Quote) => {
       // Update symbols array in state
       setSymbols((prev) =>
@@ -168,16 +173,19 @@ export const TradingMainView: React.FC = () => {
       );
 
       // If active symbol quote, update active candle & active symbol
-      if (quote.symbol === currentSymbol.symbol) {
-        setCurrentSymbol((prev) => ({
-          ...prev,
-          currentPrice: quote.price,
-          change24h: quote.change24h,
-          change24hPercent: quote.change24hPercent,
-          high24h: quote.high24h,
-          low24h: quote.low24h,
-          volume24h: quote.volume24h,
-        }));
+      if (quote.symbol === currentSymbolRef.current) {
+        setCurrentSymbol((prev) => {
+          if (prev.symbol !== quote.symbol) return prev;
+          return {
+            ...prev,
+            currentPrice: quote.price,
+            change24h: quote.change24h,
+            change24hPercent: quote.change24hPercent,
+            high24h: quote.high24h,
+            low24h: quote.low24h,
+            volume24h: quote.volume24h,
+          };
+        });
 
         setCandles((prev) => {
           if (prev.length === 0) return prev;
@@ -201,7 +209,7 @@ export const TradingMainView: React.FC = () => {
     return () => {
       unsubQuotes();
     };
-  }, [symbols, currentSymbol.symbol]);
+  }, []);
 
   // Save chart drawings
   const handleUpdateDrawings = (newDrawings: ChartDrawing[]) => {

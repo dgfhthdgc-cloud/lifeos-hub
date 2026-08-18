@@ -22,34 +22,81 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(true);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
+  // Validate session on mount
   useEffect(() => {
-    try {
-      const savedUser = Storage.getUser();
-      if (savedUser) {
-        setUser(savedUser);
-        setIsAuthenticated(true);
-      } else {
-        setUser(INITIAL_USER);
-        Storage.setUser(INITIAL_USER);
-        setIsAuthenticated(true);
+    async function initAuth() {
+      const token = localStorage.getItem('lifeos_auth_token');
+      if (token) {
+        try {
+          const resp = await fetch('/api/auth/me', {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (resp.ok) {
+            const data = await resp.json();
+            if (data.user) {
+              setUser(data.user);
+              Storage.setUser(data.user);
+              setIsAuthenticated(true);
+              setIsLoading(false);
+              return;
+            }
+          }
+        } catch {
+          // fallback to local cache
+        }
       }
-    } catch {
-      setUser(INITIAL_USER);
-      setIsAuthenticated(true);
-    } finally {
-      setIsLoading(false);
+
+      // Check local storage cache
+      try {
+        const savedUser = Storage.getUser();
+        if (savedUser) {
+          setUser(savedUser);
+          setIsAuthenticated(true);
+        } else {
+          setUser(INITIAL_USER);
+          Storage.setUser(INITIAL_USER);
+          setIsAuthenticated(true);
+        }
+      } catch {
+        setUser(INITIAL_USER);
+        setIsAuthenticated(true);
+      } finally {
+        setIsLoading(false);
+      }
     }
+
+    initAuth();
   }, []);
 
-  const login = async (email?: string, _password?: string): Promise<boolean> => {
+  const login = async (email?: string, password?: string): Promise<boolean> => {
     setIsLoading(true);
     try {
+      if (email && password) {
+        const resp = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+        });
+
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data.token && data.user) {
+            localStorage.setItem('lifeos_auth_token', data.token);
+            setUser(data.user);
+            Storage.setUser(data.user);
+            setIsAuthenticated(true);
+            return true;
+          }
+        }
+      }
+
+      // Fallback/Local login support
       let loggedUser = Storage.getUser();
       if (!loggedUser || (email && loggedUser.email !== email)) {
         loggedUser = {
           ...INITIAL_USER,
-          email: email || 'user@lifeos.internal',
-          name: email ? email.split('@')[0] : 'User',
+          email: email || 'alex@lifeos.internal',
+          name: email ? email.split('@')[0] : 'Alex',
         };
       }
       Storage.setUser(loggedUser);
@@ -67,9 +114,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setIsAuthenticated(true);
   };
 
-  const signup = async (email: string, name: string, _password?: string): Promise<boolean> => {
+  const signup = async (email: string, name: string, password?: string): Promise<boolean> => {
     setIsLoading(true);
     try {
+      if (email && password) {
+        const resp = await fetch('/api/auth/signup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, name, password }),
+        });
+
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data.token && data.user) {
+            localStorage.setItem('lifeos_auth_token', data.token);
+            setUser(data.user);
+            Storage.setUser(data.user);
+            setIsAuthenticated(true);
+            return true;
+          }
+        }
+      }
+
       const newUser: UserProfile = {
         id: `usr_${Date.now()}`,
         email,
@@ -97,20 +163,64 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = () => {
+    localStorage.removeItem('lifeos_auth_token');
     setIsAuthenticated(false);
+    setUser(null);
   };
 
-  const updateUser = (updates: Partial<UserProfile>) => {
+  const updateUser = async (updates: Partial<UserProfile>) => {
     setUser((prev) => {
       if (!prev) return null;
       const updated = { ...prev, ...updates };
       Storage.setUser(updated);
       return updated;
     });
+
+    const token = localStorage.getItem('lifeos_auth_token');
+    if (token) {
+      try {
+        await fetch('/api/auth/profile', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(updates),
+        });
+      } catch {
+        // sync offline
+      }
+    }
   };
 
-  const addXp = (amount: number, reason?: string) => {
+  const addXp = async (amount: number, reason?: string) => {
     if (amount <= 0) return;
+
+    // Server-Authoritative XP Ledger Call
+    const token = localStorage.getItem('lifeos_auth_token');
+    if (token) {
+      try {
+        const resp = await fetch('/api/gamification/award-xp', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ amount, reason }),
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data.user) {
+            setUser(data.user);
+            Storage.setUser(data.user);
+            return;
+          }
+        }
+      } catch {
+        // fallback to local calculation
+      }
+    }
+
     setUser((prev) => {
       if (!prev) return null;
       let newCurrentXp = prev.currentXp + amount;
@@ -179,3 +289,4 @@ export function useAuth() {
   }
   return context;
 }
+

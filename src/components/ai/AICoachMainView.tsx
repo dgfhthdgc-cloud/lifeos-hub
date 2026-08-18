@@ -34,14 +34,15 @@ export function AICoachMainView() {
     setAuditResults(Storage.getAIScheduleAudits());
   }, []);
 
-  const handleSendMessage = (e: React.FormEvent) => {
+  const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputText.trim() || isThinking) return;
 
+    const userPrompt = inputText.trim();
     const userMsg: AIChatMessage = {
       id: `msg-${Date.now()}`,
       role: 'user',
-      content: inputText.trim(),
+      content: userPrompt,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
 
@@ -51,20 +52,55 @@ export function AICoachMainView() {
     setInputText('');
     setIsThinking(true);
 
-    // Dynamic AI response generation
-    setTimeout(() => {
-      const responseContent = generateAIResponse(userMsg.content, user?.level || 1);
+    try {
+      const token = localStorage.getItem('lifeos_auth_token');
+      const resp = await fetch('/api/ai/coach/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          message: userPrompt,
+          history: newHistory.map((m) => ({ role: m.role, content: m.content })),
+        }),
+      });
+
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.message) {
+          Storage.addAIChatMessage(data.message);
+          setMessages((prev) => [...prev, data.message]);
+          setIsThinking(false);
+          return;
+        }
+      }
+
+      // Fallback
+      const responseContent = generateAIResponse(userPrompt, user?.level || 1);
       const assistantMsg: AIChatMessage = {
         id: `msg-${Date.now() + 1}`,
         role: 'assistant',
         content: responseContent,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        modelUsed: 'LIFE-OS-Omni-Flash-2.5',
+        modelUsed: 'LIFE-OS-Strategic-Core (Local)',
       };
       Storage.addAIChatMessage(assistantMsg);
       setMessages((prev) => [...prev, assistantMsg]);
+    } catch {
+      const responseContent = generateAIResponse(userPrompt, user?.level || 1);
+      const assistantMsg: AIChatMessage = {
+        id: `msg-${Date.now() + 1}`,
+        role: 'assistant',
+        content: responseContent,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        modelUsed: 'LIFE-OS-Strategic-Core (Local)',
+      };
+      Storage.addAIChatMessage(assistantMsg);
+      setMessages((prev) => [...prev, assistantMsg]);
+    } finally {
       setIsThinking(false);
-    }, 800);
+    }
   };
 
   const generateAIResponse = (query: string, userLevel: number): string => {

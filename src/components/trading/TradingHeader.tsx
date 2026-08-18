@@ -243,18 +243,17 @@ export const TradingHeader: React.FC<TradingHeaderProps> = ({
                   ? 'bg-emerald-500 text-neutral-950 shadow-xs'
                   : 'text-neutral-600 dark:text-slate-400 hover:text-neutral-900 dark:hover:text-white'
               }`}
+              title="Full simulation trading with live market order book"
             >
-              PAPER
+              PAPER (ACTIVE)
             </button>
             <button
               onClick={() => handleModeSwitch('LIVE')}
-              className={`px-2.5 py-1 rounded-lg transition-all ${
-                marketStatus.mode === 'LIVE'
-                  ? 'bg-rose-500 text-white shadow-xs'
-                  : 'text-neutral-600 dark:text-slate-400 hover:text-rose-500'
-              }`}
+              className="px-2.5 py-1 rounded-lg transition-all text-neutral-400 dark:text-slate-500 hover:text-amber-500 cursor-pointer flex items-center gap-1"
+              title="Live real-money broker execution is disabled for safety"
             >
-              LIVE
+              <span>LIVE</span>
+              <span className="text-[9px] px-1 py-0.2 rounded bg-neutral-300 dark:bg-slate-800 text-neutral-600 dark:text-slate-400">UNAVAILABLE</span>
             </button>
             <button
               onClick={() => handleModeSwitch('DEMO')}
@@ -356,35 +355,26 @@ export const TradingHeader: React.FC<TradingHeaderProps> = ({
         </button>
       </div>
 
-      {/* Confirmation Modal to switch to LIVE Trading */}
+      {/* Notice Modal for LIVE Trading status */}
       {showLiveConfirmModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-neutral-950/80 backdrop-blur-xs">
-          <div className="w-full max-w-md bg-white dark:bg-slate-900 border border-rose-500/40 rounded-3xl p-6 shadow-2xl space-y-4">
-            <div className="p-3 rounded-2xl bg-rose-500/10 text-rose-500 flex items-center gap-3">
+          <div className="w-full max-w-md bg-white dark:bg-slate-900 border border-amber-500/40 rounded-3xl p-6 shadow-2xl space-y-4">
+            <div className="p-3 rounded-2xl bg-amber-500/10 text-amber-500 flex items-center gap-3">
               <ShieldAlert className="w-6 h-6 shrink-0" />
               <div>
-                <h4 className="font-bold text-sm text-neutral-900 dark:text-white">Enable LIVE DMA Execution?</h4>
-                <p className="text-xs text-rose-500 font-mono">Live capital risk warning</p>
+                <h4 className="font-bold text-sm text-neutral-900 dark:text-white">Live Execution Disabled</h4>
+                <p className="text-xs text-amber-500 font-mono">Safety & Simulation Protocol</p>
               </div>
             </div>
             <p className="text-xs text-neutral-600 dark:text-slate-300 leading-relaxed">
-              You are switching from PAPER simulation to <strong>LIVE Broker Execution</strong>. All orders placed will route to real liquidity gateways with real financial risk.
+              Real-money DMA order execution is strictly disabled. LIFE OS operates in <strong>Paper Trading Simulation Mode</strong> to provide high-fidelity quantitative analysis, risk management, and strategy replay without financial exposure.
             </p>
             <div className="flex items-center justify-end gap-3 pt-2">
               <button
                 onClick={() => setShowLiveConfirmModal(false)}
-                className="px-4 py-2 rounded-xl border border-neutral-300 dark:border-slate-700 text-xs font-semibold text-neutral-700 dark:text-slate-300"
+                className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-neutral-950 text-xs font-bold shadow-md shadow-emerald-500/20"
               >
-                Keep in Paper Mode
-              </button>
-              <button
-                onClick={() => {
-                  setShowLiveConfirmModal(false);
-                  onSelectMode('LIVE');
-                }}
-                className="px-4 py-2 rounded-xl bg-rose-500 hover:bg-rose-600 text-white text-xs font-bold shadow-md shadow-rose-500/20"
-              >
-                I Understand, Enable LIVE
+                Continue in Paper Simulation
               </button>
             </div>
           </div>
