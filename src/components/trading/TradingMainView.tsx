@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   MarketSymbol,
   CandleStick,
@@ -9,14 +9,17 @@ import {
   IndicatorConfig,
   ActiveOrder,
   TradeJournalEntry,
-  TradingAccount,
+  BrokerAccount,
+  BrokerPosition,
+  BrokerOrder,
+  NewBrokerOrder,
+  MarketStatus,
+  Quote,
 } from '../../types';
-import {
-  generateCandlesticks,
-  simulatePriceTick,
-  INITIAL_SYMBOLS,
-} from '../../lib/tradingData';
-import { storage } from '../../lib/storage';
+import { INITIAL_SYMBOLS } from '../../lib/tradingData';
+import { Storage } from '../../lib/storage';
+import { MarketDataManager } from '../../lib/marketData/MarketDataManager';
+import { BrokerManager } from '../../lib/broker/BrokerManager';
 import { TradingHeader } from './TradingHeader';
 import { TradingWatchlist } from './TradingWatchlist';
 import { TradingChartCanvas } from './TradingChartCanvas';
@@ -26,22 +29,15 @@ import { ReplayControlDeck } from './ReplayControlDeck';
 import { OpenPositionsTable } from './OpenPositionsTable';
 import { PositionCalculatorModal } from './PositionCalculatorModal';
 import { TradeJournalView } from './TradeJournalView';
-import {
-  Activity,
-  Layers,
-  Sparkles,
-  TrendingUp,
-  TrendingDown,
-  ShieldCheck,
-  CheckCircle,
-  AlertTriangle,
-} from 'lucide-react';
+import { AITradingCoachView } from './AITradingCoachView';
+import { LiveOrderConfirmationModal } from './LiveOrderConfirmationModal';
+import { Sparkles } from 'lucide-react';
 
 export const TradingMainView: React.FC = () => {
-  // 1. Initial State from Storage
-  const [symbols, setSymbols] = useState<MarketSymbol[]>(() => storage.getTradingSymbols());
+  // 1. Initial State
+  const [symbols, setSymbols] = useState<MarketSymbol[]>(() => Storage.getTradingSymbols());
   const [currentSymbol, setCurrentSymbol] = useState<MarketSymbol>(() => symbols[0] || INITIAL_SYMBOLS[0]);
-  const [activeTab, setActiveTab] = useState<'terminal' | 'replay' | 'journal' | 'calculator'>('terminal');
+  const [activeTab, setActiveTab] = useState<'terminal' | 'replay' | 'journal' | 'calculator' | 'ai_coach'>('terminal');
 
   // Chart configuration
   const [timeframe, setTimeframe] = useState<Timeframe>('15m');
@@ -62,190 +58,162 @@ export const TradingMainView: React.FC = () => {
 
   // Drawing tools
   const [activeDrawingTool, setActiveDrawingTool] = useState<DrawingToolType>('cursor');
-  const [drawings, setDrawings] = useState<ChartDrawing[]>(() => storage.getChartDrawings(currentSymbol.symbol));
+  const [drawings, setDrawings] = useState<ChartDrawing[]>(() => Storage.getChartDrawings(currentSymbol.symbol));
   const [isMagnetEnabled, setIsMagnetEnabled] = useState(true);
 
-  // Candlestick historical dataset for active symbol
-  const [candles, setCandles] = useState<CandleStick[]>(() =>
-    generateCandlesticks(currentSymbol, timeframe, 140)
-  );
-
-  // Live price feed simulation
-  const [isLiveFeedActive, setIsLiveFeedActive] = useState(true);
+  // Candlestick dataset
+  const [candles, setCandles] = useState<CandleStick[]>([]);
+  const [isLoadingBars, setIsLoadingBars] = useState(false);
 
   // Replay Engine State
   const [replayIndex, setReplayIndex] = useState<number>(100);
   const [isReplayPlaying, setIsReplayPlaying] = useState(false);
   const [replaySpeed, setReplaySpeed] = useState(1);
 
-  // Paper Trading Account & Journal
-  const [account, setAccount] = useState<TradingAccount>(() => storage.getTradingAccount());
-  const [journal, setJournal] = useState<TradeJournalEntry[]>(() => storage.getTradeJournal());
+  // Market & Broker State
+  const [marketStatus, setMarketStatus] = useState<MarketStatus>(() => MarketDataManager.getStatus());
+  const [account, setAccount] = useState<BrokerAccount>({
+    accountId: 'pap_act_8801',
+    brokerName: 'Institutional Paper Engine',
+    mode: 'PAPER',
+    equity: 100000.0,
+    cash: 100000.0,
+    buyingPower: 200000.0,
+    initialCapital: 100000.0,
+    currency: 'USD',
+    realizedPnl: 0,
+    unrealizedPnl: 0,
+    marginUsed: 0,
+    dayTradesRemaining: 99,
+    status: 'ACTIVE',
+    lastSyncTime: Date.now(),
+  });
+  const [positions, setPositions] = useState<BrokerPosition[]>([]);
+  const [orders, setOrders] = useState<BrokerOrder[]>([]);
+  const [journal, setJournal] = useState<TradeJournalEntry[]>(() => Storage.getTradeJournal());
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  const showToast = (msg: string) => {
+  // Live Order Confirmation Modal State
+  const [pendingOrder, setPendingOrder] = useState<NewBrokerOrder | null>(null);
+
+  const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3500);
-  };
+  }, []);
 
-  // Re-generate candles when symbol or timeframe changes
+  // Connect Market Data & Broker on mount
   useEffect(() => {
-    const fresh = generateCandlesticks(currentSymbol, timeframe, 140);
-    setCandles(fresh);
-    setReplayIndex(Math.floor(fresh.length * 0.7));
-    setIsReplayPlaying(false);
-    // Load drawings for this symbol
-    setDrawings(storage.getChartDrawings(currentSymbol.symbol));
+    MarketDataManager.connect();
+    const unsubStatus = MarketDataManager.subscribeStatus((st) => setMarketStatus(st));
+
+    const syncBroker = async () => {
+      const acc = await BrokerManager.getAccount();
+      const pos = await BrokerManager.getPositions();
+      const ord = await BrokerManager.getOrders();
+      setAccount(acc);
+      setPositions(pos);
+      setOrders(ord);
+    };
+    syncBroker();
+    const unsubBroker = BrokerManager.subscribe(() => syncBroker());
+
+    return () => {
+      unsubStatus();
+      unsubBroker();
+    };
+  }, []);
+
+  // Fetch historical bars for active symbol & timeframe
+  const loadHistoricalBars = useCallback(async () => {
+    setIsLoadingBars(true);
+    try {
+      const bars = await MarketDataManager.getHistoricalBars(currentSymbol.symbol, timeframe, 140);
+      if (bars && bars.length > 0) {
+        setCandles(bars);
+        setReplayIndex(Math.floor(bars.length * 0.75));
+      }
+    } catch {
+      // Handled
+    } finally {
+      setIsLoadingBars(false);
+    }
   }, [currentSymbol.symbol, timeframe]);
 
-  // Save drawings on change
+  useEffect(() => {
+    loadHistoricalBars();
+    setDrawings(Storage.getChartDrawings(currentSymbol.symbol));
+    setIsReplayPlaying(false);
+  }, [loadHistoricalBars, currentSymbol.symbol]);
+
+  // Subscribe to real-time Quotes for all symbols
+  useEffect(() => {
+    const symbolList = symbols.map((s) => s.symbol);
+    const unsubQuotes = MarketDataManager.subscribeQuotes(symbolList, (quote: Quote) => {
+      // Update symbols array in state
+      setSymbols((prev) =>
+        prev.map((s) => {
+          if (s.symbol === quote.symbol) {
+            return {
+              ...s,
+              currentPrice: quote.price,
+              change24h: quote.change24h,
+              change24hPercent: quote.change24hPercent,
+              high24h: quote.high24h,
+              low24h: quote.low24h,
+              volume24h: quote.volume24h,
+            };
+          }
+          return s;
+        })
+      );
+
+      // If active symbol quote, update active candle & active symbol
+      if (quote.symbol === currentSymbol.symbol) {
+        setCurrentSymbol((prev) => ({
+          ...prev,
+          currentPrice: quote.price,
+          change24h: quote.change24h,
+          change24hPercent: quote.change24hPercent,
+          high24h: quote.high24h,
+          low24h: quote.low24h,
+          volume24h: quote.volume24h,
+        }));
+
+        setCandles((prev) => {
+          if (prev.length === 0) return prev;
+          const last = prev[prev.length - 1];
+          const updatedLast: CandleStick = {
+            ...last,
+            close: quote.price,
+            high: Math.max(last.high, quote.price),
+            low: Math.min(last.low, quote.price),
+          };
+          return [...prev.slice(0, -1), updatedLast];
+        });
+      }
+
+      // Update positions unrealized PnL in broker
+      const map = new Map<string, number>();
+      map.set(quote.symbol, quote.price);
+      BrokerManager.updateMarketQuotes(map);
+    });
+
+    return () => {
+      unsubQuotes();
+    };
+  }, [symbols, currentSymbol.symbol]);
+
+  // Save chart drawings
   const handleUpdateDrawings = (newDrawings: ChartDrawing[]) => {
     setDrawings(newDrawings);
-    storage.saveChartDrawings(currentSymbol.symbol, newDrawings);
+    Storage.saveChartDrawings(currentSymbol.symbol, newDrawings);
   };
 
   const handleClearDrawings = () => {
     setDrawings([]);
-    storage.saveChartDrawings(currentSymbol.symbol, []);
+    Storage.saveChartDrawings(currentSymbol.symbol, []);
     showToast('Chart drawings cleared');
   };
-
-  // Live Price Ticking Simulation (only in 'terminal' mode)
-  useEffect(() => {
-    if (!isLiveFeedActive || activeTab === 'replay') return;
-
-    const interval = setInterval(() => {
-      setCandles((prevCandles) => {
-        if (prevCandles.length === 0) return prevCandles;
-        const lastCandle = prevCandles[prevCandles.length - 1];
-        const volatility = currentSymbol.category === 'Crypto' ? 0.003 : 0.0015;
-        const updatedLast = simulatePriceTick(lastCandle, volatility);
-
-        // Update symbol currentPrice
-        const newPrice = updatedLast.close;
-        const previousClose = currentSymbol.currentPrice - currentSymbol.change24h || currentSymbol.currentPrice;
-        const delta = newPrice - previousClose;
-        const deltaPct = previousClose > 0 ? (delta / previousClose) * 100 : 0;
-
-        setCurrentSymbol((prev) => ({
-          ...prev,
-          currentPrice: newPrice,
-          change24h: delta,
-          change24hPercent: deltaPct,
-          high24h: Math.max(prev.high24h, newPrice),
-          low24h: Math.min(prev.low24h, newPrice),
-        }));
-
-        // Check Open Orders for SL / TP triggers
-        setAccount((prevAccount) => {
-          let updatedBalance = prevAccount.balance;
-          const updatedOrders: ActiveOrder[] = [];
-          const closedToJournal: TradeJournalEntry[] = [];
-
-          prevAccount.openOrders.forEach((order) => {
-            if (order.symbol !== currentSymbol.symbol) {
-              updatedOrders.push(order);
-              return;
-            }
-
-            const isLong = order.direction === 'long';
-            const price = newPrice;
-            let shouldClose = false;
-            let closeReason = '';
-            let exitPrice = price;
-
-            if (order.stopLoss) {
-              if (isLong && price <= order.stopLoss) {
-                shouldClose = true;
-                closeReason = 'Stop Loss Hit';
-                exitPrice = order.stopLoss;
-              } else if (!isLong && price >= order.stopLoss) {
-                shouldClose = true;
-                closeReason = 'Stop Loss Hit';
-                exitPrice = order.stopLoss;
-              }
-            }
-
-            if (order.takeProfit) {
-              if (isLong && price >= order.takeProfit) {
-                shouldClose = true;
-                closeReason = 'Take Profit Target Reached';
-                exitPrice = order.takeProfit;
-              } else if (!isLong && price <= order.takeProfit) {
-                shouldClose = true;
-                closeReason = 'Take Profit Target Reached';
-                exitPrice = order.takeProfit;
-              }
-            }
-
-            if (shouldClose) {
-              const diff = isLong ? exitPrice - order.entryPrice : order.entryPrice - exitPrice;
-              const pnl = diff * order.size;
-              const pnlPct = (diff / order.entryPrice) * 100;
-              const riskDistance = order.stopLoss ? Math.abs(order.entryPrice - order.stopLoss) : 1;
-              const rMultiple = diff / riskDistance;
-
-              updatedBalance += pnl;
-
-              const entry: TradeJournalEntry = {
-                id: `trade-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-                symbol: order.symbol,
-                category: currentSymbol.category,
-                direction: order.direction,
-                entryDate: order.timestamp,
-                exitDate: new Date().toISOString(),
-                entryPrice: order.entryPrice,
-                exitPrice,
-                stopLoss: order.stopLoss || 0,
-                takeProfit: order.takeProfit || 0,
-                positionSize: order.size,
-                pnl,
-                pnlPercent: Number(pnlPct.toFixed(2)),
-                rMultiple: Number(rMultiple.toFixed(2)),
-                riskAmount: riskDistance * order.size,
-                status: pnl > 0 ? 'win' : 'loss',
-                setupStrategy: 'Algorithmic Order Automation',
-                session: 'New York AM',
-                emotion: 'Disciplined',
-                notes: `Automated close: ${closeReason}`,
-                rating: pnl > 0 ? 5 : 3,
-              };
-
-              closedToJournal.push(entry);
-              showToast(`${closeReason} on ${order.symbol}: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
-            } else {
-              // Update floating PnL
-              const diff = isLong ? price - order.entryPrice : order.entryPrice - price;
-              updatedOrders.push({
-                ...order,
-                pnl: diff * order.size,
-              });
-            }
-          });
-
-          if (closedToJournal.length > 0) {
-            setJournal((prevJ) => {
-              const nextJ = [...closedToJournal, ...prevJ];
-              storage.saveTradeJournal(nextJ);
-              return nextJ;
-            });
-          }
-
-          const newAcc: TradingAccount = {
-            ...prevAccount,
-            balance: updatedBalance,
-            openOrders: updatedOrders,
-          };
-          storage.saveTradingAccount(newAcc);
-          return newAcc;
-        });
-
-        return [...prevCandles.slice(0, -1), updatedLast];
-      });
-    }, 1200);
-
-    return () => clearInterval(interval);
-  }, [isLiveFeedActive, activeTab, currentSymbol, account.openOrders]);
 
   // Replay Engine Auto-play interval
   useEffect(() => {
@@ -265,129 +233,73 @@ export const TradingMainView: React.FC = () => {
     return () => clearInterval(interval);
   }, [isReplayPlaying, replaySpeed, candles.length, activeTab]);
 
-  // Quick Order Execution Handler
+  // Initiate Quick Order
   const handleExecuteQuickOrder = (
     direction: 'long' | 'short',
     size: number,
     slPrice?: number,
     tpPrice?: number
   ) => {
-    const activeCandle =
-      activeTab === 'replay' && replayIndex < candles.length
-        ? candles[replayIndex]
-        : candles[candles.length - 1];
-
-    const entryPrice = activeCandle ? activeCandle.close : currentSymbol.currentPrice;
-
-    const newOrder: ActiveOrder = {
-      id: `ord-${Date.now()}`,
+    const orderPayload: NewBrokerOrder = {
       symbol: currentSymbol.symbol,
       direction,
-      entryPrice,
-      size,
+      orderType: 'market',
+      quantity: size,
       stopLoss: slPrice,
       takeProfit: tpPrice,
-      pnl: 0,
-      timestamp: new Date().toISOString(),
+      mode: marketStatus.mode === 'LIVE' ? 'LIVE' : 'PAPER',
     };
 
-    const updatedAccount: TradingAccount = {
-      ...account,
-      openOrders: [...account.openOrders, newOrder],
-    };
-
-    setAccount(updatedAccount);
-    storage.saveTradingAccount(updatedAccount);
-    showToast(`Executed ${direction.toUpperCase()} ${size} ${currentSymbol.symbol} @ $${entryPrice.toFixed(currentSymbol.decimals)}`);
+    setPendingOrder(orderPayload);
   };
 
-  // Close Order Manually
-  const handleCloseOrder = (orderId: string) => {
-    const targetOrder = account.openOrders.find((o) => o.id === orderId);
-    if (!targetOrder) return;
+  // Confirm and submit order through BrokerManager
+  const handleConfirmOrder = async () => {
+    if (!pendingOrder) return;
 
-    const activeCandle =
-      activeTab === 'replay' && replayIndex < candles.length
-        ? candles[replayIndex]
-        : candles[candles.length - 1];
+    const currentPrice = currentSymbol.currentPrice;
+    const result = await BrokerManager.submitOrder(pendingOrder, currentPrice);
 
-    const exitPrice = activeCandle ? activeCandle.close : currentSymbol.currentPrice;
-    const isLong = targetOrder.direction === 'long';
-    const priceDiff = isLong ? exitPrice - targetOrder.entryPrice : targetOrder.entryPrice - exitPrice;
-    const pnl = priceDiff * targetOrder.size;
-    const pnlPercent = (priceDiff / targetOrder.entryPrice) * 100;
-    const riskDist = targetOrder.stopLoss ? Math.abs(targetOrder.entryPrice - targetOrder.stopLoss) : 1;
-    const rMultiple = priceDiff / riskDist;
+    if (result.success) {
+      showToast(
+        `Filled ${pendingOrder.direction.toUpperCase()} ${pendingOrder.quantity} ${pendingOrder.symbol} @ $${currentPrice}`
+      );
+    } else {
+      showToast(`Order Rejected: ${result.error || 'Unknown error'}`);
+    }
 
-    const journalEntry: TradeJournalEntry = {
-      id: `trade-${Date.now()}`,
-      symbol: targetOrder.symbol,
-      category: currentSymbol.category,
-      direction: targetOrder.direction,
-      entryDate: targetOrder.timestamp,
-      exitDate: new Date().toISOString(),
-      entryPrice: targetOrder.entryPrice,
-      exitPrice,
-      stopLoss: targetOrder.stopLoss || 0,
-      takeProfit: targetOrder.takeProfit || 0,
-      positionSize: targetOrder.size,
-      pnl,
-      pnlPercent: Number(pnlPercent.toFixed(2)),
-      rMultiple: Number(rMultiple.toFixed(2)),
-      riskAmount: riskDist * targetOrder.size,
-      status: pnl > 0 ? 'win' : pnl < 0 ? 'loss' : 'breakeven',
-      setupStrategy: 'Manual Discretionary Execution',
-      session: 'New York AM',
-      emotion: 'Disciplined',
-      notes: 'Manually closed position at market.',
-      rating: pnl > 0 ? 5 : 4,
-    };
-
-    const newJournal = [journalEntry, ...journal];
-    setJournal(newJournal);
-    storage.saveTradeJournal(newJournal);
-
-    const updatedAccount: TradingAccount = {
-      ...account,
-      balance: account.balance + pnl,
-      openOrders: account.openOrders.filter((o) => o.id !== orderId),
-    };
-
-    setAccount(updatedAccount);
-    storage.saveTradingAccount(updatedAccount);
-    showToast(`Closed ${targetOrder.symbol}: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} PnL`);
+    setPendingOrder(null);
   };
 
-  // Add Manual Trade to Journal
-  const handleAddJournalTrade = (tradeData: Omit<TradeJournalEntry, 'id'>) => {
-    const newEntry: TradeJournalEntry = {
-      ...tradeData,
-      id: `trade-${Date.now()}`,
-    };
-    const updatedJournal = [newEntry, ...journal];
-    setJournal(updatedJournal);
-    storage.saveTradeJournal(updatedJournal);
+  // Close position handler
+  const handleClosePosition = async (positionId: string) => {
+    const pos = positions.find((p) => p.id === positionId);
+    if (!pos) return;
 
-    // Update account balance
-    const updatedAccount = {
-      ...account,
-      balance: account.balance + newEntry.pnl,
-    };
-    setAccount(updatedAccount);
-    storage.saveTradingAccount(updatedAccount);
-    showToast(`Logged trade ${newEntry.symbol} to journal`);
+    const currentPrice = pos.currentPrice;
+    const result = await BrokerManager.closePosition(positionId, currentPrice);
+    if (result.success) {
+      showToast(`Closed position on ${pos.symbol}: ${result.pnl && result.pnl >= 0 ? '+' : ''}$${(result.pnl || 0).toFixed(2)}`);
+      setJournal(Storage.getTradeJournal());
+    }
   };
 
-  // Delete trade from journal
-  const handleDeleteJournalTrade = (tradeId: string) => {
-    const updated = journal.filter((j) => j.id !== tradeId);
-    setJournal(updated);
-    storage.saveTradeJournal(updated);
-    showToast('Trade entry deleted');
-  };
+  // Map BrokerPositions to ActiveOrder interface for existing OpenPositionsTable
+  const mappedOrders: ActiveOrder[] = positions.map((p) => ({
+    id: p.id,
+    symbol: p.symbol,
+    direction: p.direction,
+    size: p.quantity,
+    entryPrice: p.entryPrice,
+    stopLoss: p.stopLoss,
+    takeProfit: p.takeProfit,
+    pnl: p.unrealizedPnl,
+    pnlPercent: p.unrealizedPnlPercent,
+    timestamp: new Date(p.openedAt).toISOString(),
+  }));
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto">
+    <div className="space-y-6 max-w-7xl mx-auto pb-12">
       {/* Toast notification banner */}
       {toastMessage && (
         <div className="fixed top-6 right-6 z-50 px-4 py-2.5 rounded-2xl bg-emerald-500 text-slate-950 text-xs font-mono font-bold shadow-2xl flex items-center gap-2 animate-bounce">
@@ -403,10 +315,12 @@ export const TradingMainView: React.FC = () => {
         onSelectSymbol={setCurrentSymbol}
         activeTab={activeTab}
         onSelectTab={setActiveTab}
-        accountBalance={account.balance}
-        openOrdersCount={account.openOrders.length}
-        isLiveFeedActive={isLiveFeedActive}
-        onToggleLiveFeed={() => setIsLiveFeedActive(!isLiveFeedActive)}
+        account={account}
+        marketStatus={marketStatus}
+        onSelectMode={(mode) => {
+          MarketDataManager.setMode(mode);
+          BrokerManager.setMode(mode === 'LIVE' ? 'LIVE' : 'PAPER');
+        }}
         onOpenCalculator={() => setIsCalculatorModalOpen(true)}
       />
 
@@ -424,7 +338,7 @@ export const TradingMainView: React.FC = () => {
                 onToggleMagnet={() => setIsMagnetEnabled(!isMagnetEnabled)}
                 onClearDrawings={handleClearDrawings}
                 drawingsCount={drawings.length}
-                onTakeScreenshot={() => showToast('Snapshot saved to clipboard')}
+                onTakeScreenshot={() => showToast('Chart snapshot copied to clipboard')}
               />
 
               {/* Responsive Chart Canvas */}
@@ -446,15 +360,15 @@ export const TradingMainView: React.FC = () => {
               </div>
             </div>
 
-            {/* Open Paper Positions */}
+            {/* Open Positions & Executions */}
             <OpenPositionsTable
-              orders={account.openOrders}
+              orders={mappedOrders}
               symbols={symbols}
-              onCloseOrder={handleCloseOrder}
+              onCloseOrder={handleClosePosition}
             />
           </div>
 
-          {/* Right 1 Col: Market Watchlist & Quick Actions */}
+          {/* Right 1 Col: Market Watchlist & Quick Execution */}
           <div className="lg:col-span-1 space-y-6">
             <TradingWatchlist
               symbols={symbols}
@@ -476,7 +390,7 @@ export const TradingMainView: React.FC = () => {
               onToggleMagnet={() => setIsMagnetEnabled(!isMagnetEnabled)}
               onClearDrawings={handleClearDrawings}
               drawingsCount={drawings.length}
-              onTakeScreenshot={() => showToast('Snapshot saved')}
+              onTakeScreenshot={() => showToast('Replay snapshot saved')}
             />
 
             <div className="flex-1 min-h-[520px]">
@@ -509,8 +423,8 @@ export const TradingMainView: React.FC = () => {
             replaySpeed={replaySpeed}
             onChangeSpeed={setReplaySpeed}
             onExecuteQuickOrder={handleExecuteQuickOrder}
-            openOrders={account.openOrders}
-            onCloseOrder={handleCloseOrder}
+            openOrders={mappedOrders}
+            onCloseOrder={handleClosePosition}
             currentCandle={candles[replayIndex]}
           />
         </div>
@@ -520,8 +434,30 @@ export const TradingMainView: React.FC = () => {
       {activeTab === 'journal' && (
         <TradeJournalView
           journal={journal}
-          onAddTrade={handleAddJournalTrade}
-          onDeleteTrade={handleDeleteJournalTrade}
+          onAddTrade={(tradeData) => {
+            const newEntry: TradeJournalEntry = {
+              ...tradeData,
+              id: `trade-${Date.now()}`,
+            };
+            const updated = [newEntry, ...journal];
+            setJournal(updated);
+            Storage.saveTradeJournal(updated);
+            showToast(`Trade logged to journal`);
+          }}
+          onDeleteTrade={(tradeId) => {
+            const updated = journal.filter((j) => j.id !== tradeId);
+            setJournal(updated);
+            Storage.saveTradeJournal(updated);
+            showToast('Journal entry deleted');
+          }}
+        />
+      )}
+
+      {/* AI Trading Coach Tab */}
+      {activeTab === 'ai_coach' && (
+        <AITradingCoachView
+          journal={journal}
+          currentSymbol={currentSymbol}
         />
       )}
 
@@ -533,7 +469,7 @@ export const TradingMainView: React.FC = () => {
               Institutional Risk & Position Sizing Calculator
             </h3>
             <p className="text-xs text-neutral-500 dark:text-slate-400">
-              Calculate risk per trade, stop loss invalidation points, and position notional value.
+              Calculate risk per trade, stop loss invalidation points, and position notional value based on your current account equity (${account.equity.toLocaleString()}).
             </p>
             <button
               onClick={() => setIsCalculatorModalOpen(true)}
@@ -545,7 +481,7 @@ export const TradingMainView: React.FC = () => {
         </div>
       )}
 
-      {/* Modals */}
+      {/* Indicators Modal */}
       <IndicatorsModal
         isOpen={isIndicatorsModalOpen}
         onClose={() => setIsIndicatorsModalOpen(false)}
@@ -553,12 +489,26 @@ export const TradingMainView: React.FC = () => {
         onChangeIndicators={setIndicators}
       />
 
+      {/* Position Sizing Calculator Modal */}
       <PositionCalculatorModal
         isOpen={isCalculatorModalOpen}
         onClose={() => setIsCalculatorModalOpen(false)}
         currentSymbol={currentSymbol}
-        accountBalance={account.balance}
+        accountBalance={account.equity}
       />
+
+      {/* Live Order Confirmation & Risk Inspection Modal */}
+      {pendingOrder && (
+        <LiveOrderConfirmationModal
+          isOpen={true}
+          onClose={() => setPendingOrder(null)}
+          onConfirm={handleConfirmOrder}
+          order={pendingOrder}
+          currentPrice={currentSymbol.currentPrice}
+          account={account}
+          positions={positions}
+        />
+      )}
     </div>
   );
 };

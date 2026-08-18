@@ -62,6 +62,9 @@ import {
   INITIAL_BADGES,
   INITIAL_STREAK_DATA,
   INITIAL_XP_TRANSACTIONS,
+  calculateStreakFromDates,
+  calculateProgression,
+  getTotalXpForLevel,
 } from './gamification';
 import { INITIAL_DETAILED_COURSES } from './initialCoursesData';
 import {
@@ -888,19 +891,21 @@ export const Storage = {
 
         if (isCurrentlyCompleted) {
           newHistory = h.history.filter((d) => d !== dateStr);
-          newStreak = Math.max(0, h.currentStreak - 1);
         } else {
           newHistory = [dateStr, ...h.history];
-          newStreak = h.currentStreak + 1;
           awarded = h.xp || 15;
           this.damageActiveBoss(40, `Checked Habit: "${h.title || h.name}"`, 'habit');
-          if (newStreak % 7 === 0) {
-            this.triggerAutomations('habit_streak_reached', { streak: newStreak, name: h.title || h.name });
-          }
+        }
+
+        const streakResult = calculateStreakFromDates(newHistory);
+        const newStreak = streakResult.currentStreak;
+        const bestStreak = streakResult.bestStreak;
+
+        if (!isCurrentlyCompleted && newStreak > 0 && newStreak % 7 === 0) {
+          this.triggerAutomations('habit_streak_reached', { streak: newStreak, name: h.title || h.name });
         }
 
         const isToday = dateStr === getTodayDateStr();
-        const bestStreak = Math.max(h.bestStreak, newStreak);
 
         targetHabit = {
           ...h,
@@ -1591,6 +1596,57 @@ export const Storage = {
     }
 
     return newTx;
+  },
+
+  /**
+   * Centralized XP Progression Awarder.
+   * Atomically computes non-linear level curve, updates UserProfile, records ledger transaction,
+   * updates daily quest XP counters, and returns the unified state.
+   */
+  awardProgressionXp(
+    rawAmount: number,
+    reason: string,
+    category: 'task' | 'habit' | 'goal' | 'learning' | 'trading' | 'quest' | 'badge' | 'boss'
+  ): { user: UserProfile; xpAwarded: number; leveledUp: boolean } {
+    const user = this.getUser() || INITIAL_USER;
+    const streak = this.getStreakData();
+    const multiplier = streak.multiplier || 1.0;
+    const finalAmount = Math.round(rawAmount * multiplier);
+
+    // Calculate current lifetime total XP from existing user level + current level XP
+    const currentBaseTotal = getTotalXpForLevel(user.level) + user.currentXp;
+    const newTotalXp = currentBaseTotal + finalAmount;
+
+    // Calculate new progression
+    const prog = calculateProgression(newTotalXp);
+    const leveledUp = prog.level > user.level;
+
+    const updatedUser: UserProfile = {
+      ...user,
+      level: prog.level,
+      currentXp: prog.currentLevelXp,
+      nextLevelXp: prog.nextLevelXp,
+      title: prog.rankInfo.title,
+    };
+
+    this.setUser(updatedUser);
+
+    // Record ledger transaction
+    this.addXpTransaction({
+      amount: finalAmount,
+      reason,
+      category,
+      streakMultiplier: multiplier,
+    });
+
+    // Update quests tracking xp_earned
+    this.updateQuestProgress('xp_earned', finalAmount);
+
+    return {
+      user: updatedUser,
+      xpAwarded: finalAmount,
+      leveledUp,
+    };
   },
 
   recordXpTransaction(txData: Omit<XpTransaction, 'id'> & { timestamp?: string }): XpTransaction {

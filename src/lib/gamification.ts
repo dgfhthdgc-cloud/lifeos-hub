@@ -170,6 +170,94 @@ export function calculateStreakMultiplier(streakDays: number): number {
   return 1.0;
 }
 
+/**
+ * Calculates accurate calendar day streaks from an array of completion dates (ISO or YYYY-MM-DD).
+ * Handles timezone shifts, duplicate same-day completions, missed days, and active status.
+ */
+export function calculateStreakFromDates(historyDates: string[]): { currentStreak: number; bestStreak: number } {
+  if (!historyDates || historyDates.length === 0) {
+    return { currentStreak: 0, bestStreak: 0 };
+  }
+
+  const uniqueDates = Array.from(
+    new Set(
+      historyDates
+        .map((d) => (d ? d.split('T')[0] : ''))
+        .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+    )
+  ).sort().reverse();
+
+  if (uniqueDates.length === 0) {
+    return { currentStreak: 0, bestStreak: 0 };
+  }
+
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  
+  const yDay = new Date(now);
+  yDay.setDate(yDay.getDate() - 1);
+  const yesterdayStr = `${yDay.getFullYear()}-${String(yDay.getMonth() + 1).padStart(2, '0')}-${String(yDay.getDate()).padStart(2, '0')}`;
+
+  const dateSet = new Set(uniqueDates);
+
+  let currentStreak = 0;
+  let checkDate = new Date(now);
+
+  if (!dateSet.has(todayStr)) {
+    if (dateSet.has(yesterdayStr)) {
+      checkDate = new Date(yDay);
+    } else {
+      checkDate = null as unknown as Date;
+    }
+  }
+
+  if (checkDate) {
+    while (true) {
+      const y = checkDate.getFullYear();
+      const m = String(checkDate.getMonth() + 1).padStart(2, '0');
+      const d = String(checkDate.getDate()).padStart(2, '0');
+      const s = `${y}-${m}-${d}`;
+      if (dateSet.has(s)) {
+        currentStreak++;
+        checkDate.setDate(checkDate.getDate() - 1);
+      } else {
+        break;
+      }
+    }
+  }
+
+  // Calculate best all-time continuous consecutive run
+  let bestStreak = 0;
+  const ascending = [...uniqueDates].sort();
+  let currentRun = 0;
+  let prevUtcTime: number | null = null;
+
+  for (const dateString of ascending) {
+    const [year, month, day] = dateString.split('-').map(Number);
+    const currUtcTime = Date.UTC(year, month - 1, day);
+
+    if (prevUtcTime === null) {
+      currentRun = 1;
+    } else {
+      const diffDays = Math.round((currUtcTime - prevUtcTime) / (1000 * 60 * 60 * 24));
+      if (diffDays === 1) {
+        currentRun++;
+      } else if (diffDays > 1) {
+        currentRun = 1;
+      }
+    }
+    prevUtcTime = currUtcTime;
+    if (currentRun > bestStreak) {
+      bestStreak = currentRun;
+    }
+  }
+
+  return {
+    currentStreak,
+    bestStreak: Math.max(bestStreak, currentStreak),
+  };
+}
+
 export const INITIAL_STREAK_DATA: StreakSystemData = {
   currentStreak: 0,
   bestStreak: 0,

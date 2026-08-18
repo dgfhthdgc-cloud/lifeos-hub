@@ -679,6 +679,159 @@ export interface IndicatorConfig {
 
 export type OrderType = 'market' | 'limit';
 
+// -------------------------------------------------------------
+// MARKET DATA & BROKER ARCHITECTURE
+// -------------------------------------------------------------
+
+export type MarketMode = 'DEMO' | 'PAPER' | 'LIVE';
+export type MarketConnectionState = 'connected' | 'connecting' | 'disconnected' | 'error';
+
+export interface MarketStatus {
+  mode: MarketMode;
+  state: MarketConnectionState;
+  provider: string;
+  lastUpdated: number;
+  latencyMs?: number;
+  errorMessage?: string;
+}
+
+export interface Quote {
+  symbol: string;
+  price: number;
+  bid: number;
+  ask: number;
+  change24h: number;
+  change24hPercent: number;
+  high24h: number;
+  low24h: number;
+  volume24h: number;
+  timestamp: number;
+  provider: string;
+}
+
+export interface Bar {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  confirmed?: boolean;
+}
+
+export interface MarketDataProvider {
+  name: string;
+  supportedSymbols: string[];
+  connect(): Promise<void>;
+  disconnect(): void;
+  subscribeQuotes(symbols: string[], callback: (quote: Quote) => void): () => void;
+  subscribeBars(symbol: string, timeframe: Timeframe, callback: (bar: Bar) => void): () => void;
+  getHistoricalBars(symbol: string, timeframe: Timeframe, limit?: number): Promise<Bar[]>;
+  getQuote(symbol: string): Promise<Quote>;
+  getStatus(): MarketStatus;
+}
+
+export type BrokerOrderState =
+  | 'pending'
+  | 'accepted'
+  | 'new'
+  | 'partially_filled'
+  | 'filled'
+  | 'cancelled'
+  | 'rejected'
+  | 'expired';
+
+export interface BrokerAccount {
+  accountId: string;
+  brokerName: string;
+  mode: 'PAPER' | 'LIVE';
+  equity: number;
+  cash: number;
+  buyingPower: number;
+  initialCapital: number;
+  currency: string;
+  realizedPnl: number;
+  unrealizedPnl: number;
+  marginUsed: number;
+  dayTradesRemaining?: number;
+  status: 'ACTIVE' | 'RESTRICTED' | 'DISCONNECTED';
+  lastSyncTime: number;
+}
+
+export interface BrokerPosition {
+  id: string;
+  symbol: string;
+  direction: 'long' | 'short';
+  quantity: number;
+  entryPrice: number;
+  currentPrice: number;
+  marketValue: number;
+  unrealizedPnl: number;
+  unrealizedPnlPercent: number;
+  stopLoss?: number;
+  takeProfit?: number;
+  openedAt: number;
+  assetCategory: AssetCategory;
+}
+
+export interface BrokerOrder {
+  id: string;
+  brokerOrderId: string;
+  symbol: string;
+  direction: 'long' | 'short';
+  orderType: OrderType;
+  status: BrokerOrderState;
+  submittedAt: number;
+  filledAt?: number;
+  quantity: number;
+  filledQuantity: number;
+  remainingQuantity: number;
+  limitPrice?: number;
+  stopPrice?: number;
+  averageFillPrice?: number;
+  stopLoss?: number;
+  takeProfit?: number;
+  estimatedRiskAmount?: number;
+  rejectReason?: string;
+  mode: 'PAPER' | 'LIVE';
+}
+
+export interface NewBrokerOrder {
+  symbol: string;
+  direction: 'long' | 'short';
+  orderType: OrderType;
+  quantity: number;
+  limitPrice?: number;
+  stopLoss?: number;
+  takeProfit?: number;
+  mode: 'PAPER' | 'LIVE';
+}
+
+export interface RiskLimits {
+  maxRiskPerTradePercent: number; // e.g. 2.0%
+  maxDailyLossPercent: number; // e.g. 4.0%
+  maxOpenPositions: number; // e.g. 5
+  maxPositionSizeDollars: number; // e.g. $50,000
+}
+
+export interface RiskAnalysisResult {
+  allowed: boolean;
+  riskAmount: number;
+  riskPercentOfEquity: number;
+  stopDistance: number;
+  recommendedPositionSize: number;
+  maximumLoss: number;
+  potentialReward: number;
+  riskRewardRatio: number;
+  violations: string[];
+  warnings: string[];
+  assetClassRules: {
+    formula: string;
+    pipOrTickValue: number;
+    lotOrUnitScale: number;
+  };
+}
+
 export interface ActiveOrder {
   id: string;
   symbol: string;
