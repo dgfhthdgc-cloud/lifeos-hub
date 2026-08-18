@@ -75,4 +75,9 @@ export interface DatabaseAdapter {
   ): { profile: UserProfile; transaction: XpTransaction; version: number };
 
   addAiMessage(userId: string, message: AIChatMessage): void;
+
+  updateUserPassword(userId: string, passwordHash: string, salt: string): boolean;
+  isReady(): boolean;
+  getStats(): { userCount: number; adapter: string; path?: string };
+  close(): Promise<void>;
 }

@@ -3,6 +3,7 @@ import { JsonDatabaseAdapter } from './database/JsonDatabaseAdapter';
 import { PostgresDatabaseAdapter } from './database/PostgresDatabaseAdapter';
 import { DatabaseAdapter } from './database/DatabaseAdapter';
 import { migrateFromJson } from './database/migrator';
+import { logger } from './logger';
 
 export const sqlDb = new SqlDatabaseAdapter();
 export const jsonDb = new JsonDatabaseAdapter();
@@ -25,36 +26,56 @@ function isValidPostgresUrl(urlStr: string | undefined): boolean {
 
 export async function initDatabase(): Promise<DatabaseAdapter> {
   const dbUrl = process.env.DATABASE_URL;
+  const requirePostgres = process.env.REQUIRE_POSTGRES === 'true';
+
   if (isValidPostgresUrl(dbUrl)) {
     try {
-      console.log('[Database] Connecting to PostgreSQL database...');
+      logger.info('DATABASE', 'Connecting to PostgreSQL database cluster...');
       const pgDb = new PostgresDatabaseAdapter();
       await pgDb.initialize();
-      console.log('[Database] Connected to PostgreSQL successfully.');
+      logger.info('DATABASE', 'PostgreSQL database connected and schema initialized.');
       activeDb = pgDb;
       return activeDb;
     } catch (err: any) {
-      console.warn('[Database] PostgreSQL connection failed, falling back to durable SQLite:', err?.message);
+      logger.error('DATABASE', 'PostgreSQL connection failed', { error: err?.message });
+      if (requirePostgres) {
+        throw new Error(
+          `FATAL DATABASE ERROR: REQUIRE_POSTGRES is true but connection to PostgreSQL failed: ${err?.message}`
+        );
+      }
+      logger.warn(
+        'DATABASE',
+        'Falling back to durable SQLite engine. (Note: SQLite is optimized for single-instance container deployments; PostgreSQL is recommended for multi-instance scaling).'
+      );
     }
   } else if (dbUrl && dbUrl.trim() !== '') {
-    console.log('[Database] DATABASE_URL is not a valid postgres connection string. Using durable SQLite.');
+    if (requirePostgres) {
+      throw new Error(
+        'FATAL DATABASE ERROR: REQUIRE_POSTGRES is true but DATABASE_URL is not a valid PostgreSQL connection string.'
+      );
+    }
+    logger.info('DATABASE', 'DATABASE_URL is not a postgres string. Using durable SQLite engine.');
   }
 
-  console.log('[Database] Initializing durable SQLite database...');
+  logger.info('DATABASE', 'Initializing durable SQLite database (.data/lifeos.sqlite)...');
   await sqlDb.initialize();
-  console.log('[Database] Durable SQLite database initialized at .data/lifeos.sqlite');
+  logger.info('DATABASE', 'Durable SQLite database initialized with composite indexing and transaction isolation.');
 
   // Run migration from users.json if present
   try {
     const summary = await migrateFromJson(sqlDb);
     if (summary.usersMigrated > 0) {
-      console.log(`[Database Migration] Imported ${summary.usersMigrated} users from .data/users.json into SQLite.`);
+      logger.info('DATABASE', `Migrated ${summary.usersMigrated} legacy users into SQLite.`);
     }
   } catch (err: any) {
-    console.warn('[Database Migration] users.json import notice:', err?.message);
+    logger.warn('DATABASE', 'Legacy migration notice', { error: err?.message });
   }
 
   activeDb = sqlDb;
+  return activeDb;
+}
+
+export function getActiveDatabase(): DatabaseAdapter {
   return activeDb;
 }
 
@@ -70,3 +91,4 @@ export const db: DatabaseAdapter = new Proxy({} as DatabaseAdapter, {
 });
 
 export type { DatabaseAdapter };
+

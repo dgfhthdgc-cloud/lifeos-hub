@@ -1013,4 +1013,29 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
     state.version = (state.version || 1) + 1;
     this.saveToDisk();
   }
+
+  public updateUserPassword(userId: string, passwordHash: string, salt: string): boolean {
+    const user = this.users[userId];
+    if (!user) return false;
+    user.passwordHash = passwordHash;
+    user.salt = salt;
+    this.saveToDisk();
+    return true;
+  }
+
+  public isReady(): boolean {
+    return true;
+  }
+
+  public getStats(): { userCount: number; adapter: string; path?: string } {
+    return {
+      userCount: Object.keys(this.users).length,
+      adapter: 'json',
+      path: USERS_FILE,
+    };
+  }
+
+  public async close(): Promise<void> {
+    this.saveToDisk();
+  }
 }

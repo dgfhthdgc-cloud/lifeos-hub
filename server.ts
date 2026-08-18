@@ -3,8 +3,18 @@ import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import { db, initDatabase } from './src/server/db';
-import { generateAuthToken, verifyAuthToken, verifyPassword, hashPassword, validateAuthSecretOnStartup } from './src/server/auth';
+import {
+  generateAuthToken,
+  verifyAuthToken,
+  verifyPassword,
+  hashPassword,
+  validateAuthSecretOnStartup,
+  generatePasswordResetToken,
+  verifyPasswordResetToken,
+} from './src/server/auth';
 import { generateAICoachResponse } from './src/server/aiCoach';
+import { validateEnvironment, getConfig } from './src/server/config';
+import { logger } from './src/server/logger';
 
 // Extend Express Request with authenticated user
 declare global {
@@ -14,15 +24,17 @@ declare global {
         userId: string;
         email: string;
       };
+      requestId?: string;
     }
   }
 }
 
-// In-Memory Sliding Window Rate Limiter
+// In-Memory Sliding Window Rate Limiter with Standard Headers
 interface RateLimitConfig {
   windowMs: number;
   max: number;
   message?: string;
+  category?: 'AUTH' | 'AI' | 'SYNC' | 'XP' | 'GENERAL';
 }
 
 function createRateLimiter(config: RateLimitConfig) {
@@ -45,27 +57,48 @@ function createRateLimiter(config: RateLimitConfig) {
       (req.headers['x-forwarded-for'] ? String(req.headers['x-forwarded-for']).split(',')[0].trim() : 'client');
     const now = Date.now();
 
-    const record = store.get(clientKey);
+    let record = store.get(clientKey);
     if (!record || now > record.resetTime) {
-      store.set(clientKey, { count: 1, resetTime: now + config.windowMs });
-      return next();
+      record = { count: 1, resetTime: now + config.windowMs };
+      store.set(clientKey, record);
+    } else {
+      record.count += 1;
     }
 
-    if (record.count >= config.max) {
+    const remaining = Math.max(0, config.max - record.count);
+    const resetTimeSec = Math.ceil(record.resetTime / 1000);
+
+    res.setHeader('X-RateLimit-Limit', String(config.max));
+    res.setHeader('X-RateLimit-Remaining', String(remaining));
+    res.setHeader('X-RateLimit-Reset', String(resetTimeSec));
+
+    if (record.count > config.max) {
       const retryAfterSec = Math.ceil((record.resetTime - now) / 1000);
       res.setHeader('Retry-After', String(retryAfterSec));
+      logger.warn('RATE_LIMIT', `Rate limit exceeded on client ${clientKey}`, {
+        path: req.path,
+        limit: config.max,
+        retryAfter: retryAfterSec,
+      });
       return res.status(429).json({
         error: 'TOO_MANY_REQUESTS',
         message: config.message || `Rate limit exceeded. Please try again in ${retryAfterSec} seconds.`,
       });
     }
 
-    record.count += 1;
     next();
   };
 }
 
 async function startServer() {
+  // Validate production configuration and environment parameters
+  const appConfig = validateEnvironment();
+  logger.info('SYSTEM', 'Environment configuration validated successfully.', {
+    nodeEnv: appConfig.nodeEnv,
+    isPostgres: appConfig.isPostgres,
+    requirePostgres: appConfig.requirePostgres,
+  });
+
   // Initialize durable database and run data migrations
   await initDatabase();
 
@@ -74,6 +107,14 @@ async function startServer() {
 
   const app = express();
   const PORT = 3000;
+
+  // Correlation ID & Request Context Middleware
+  app.use((req, res, next) => {
+    const correlationId = (req.headers['x-request-id'] as string) || `req_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    req.requestId = correlationId;
+    res.setHeader('X-Request-Id', correlationId);
+    next();
+  });
 
   // Security Headers Middleware
   app.use((_req, res, next) => {
@@ -85,7 +126,7 @@ async function startServer() {
     next();
   });
 
-  // Body parser with conservative payload limits
+  // Body parser with conservative payload limits (protect against large body DoS)
   app.use(express.json({ limit: '2mb' }));
 
   // Rate Limiters
@@ -93,18 +134,21 @@ async function startServer() {
     windowMs: 60 * 1000, // 1 minute
     max: 10,
     message: 'Too many authentication attempts. Please try again in a minute.',
+    category: 'AUTH',
   });
 
   const aiRateLimiter = createRateLimiter({
     windowMs: 60 * 1000, // 1 minute
     max: 20,
     message: 'AI request limit reached. Please wait a moment before sending more queries.',
+    category: 'AI',
   });
 
   const xpRateLimiter = createRateLimiter({
     windowMs: 60 * 1000, // 1 minute
     max: 30,
     message: 'XP transaction limit reached.',
+    category: 'XP',
   });
 
   // Request Auth Guard Middleware
@@ -117,6 +161,7 @@ async function startServer() {
     const token = authHeader.split(' ')[1];
     const payload = verifyAuthToken(token);
     if (!payload) {
+      logger.security('AUTH', 'Invalid or expired token provided in request', { path: req.path, ip: req.ip });
       return res.status(401).json({ error: 'INVALID_TOKEN', message: 'Session token invalid or expired.' });
     }
 
@@ -148,9 +193,15 @@ async function startServer() {
         return res.status(400).json({ error: 'WEAK_PASSWORD', message: 'Password must be at least 6 characters.' });
       }
 
+      if (email.length > 254) {
+        return res.status(400).json({ error: 'INVALID_EMAIL', message: 'Email address exceeds maximum length.' });
+      }
+
       const { hash, salt } = hashPassword(password);
       const userRecord = db.createUser(email, hash, salt, typeof name === 'string' ? name : '');
       const token = generateAuthToken({ userId: userRecord.id, email: userRecord.email });
+
+      logger.info('AUTH', `New user registered: ${userRecord.email}`, { userId: userRecord.id });
 
       res.json({
         success: true,
@@ -158,6 +209,7 @@ async function startServer() {
         user: userRecord.profile,
       });
     } catch (err: any) {
+      logger.warn('AUTH', 'Signup rejected', { error: err?.message });
       res.status(400).json({ error: 'SIGNUP_FAILED', message: err?.message || 'Signup failed' });
     }
   });
@@ -171,15 +223,18 @@ async function startServer() {
 
       const userRecord = db.getUserByEmail(email);
       if (!userRecord) {
+        logger.security('AUTH', 'Failed login attempt - unknown user', { emailAttempt: email.slice(0, 3) + '***' });
         return res.status(401).json({ error: 'INVALID_CREDENTIALS', message: 'Invalid email or password.' });
       }
 
       const isValid = verifyPassword(password, userRecord.passwordHash, userRecord.salt);
       if (!isValid) {
+        logger.security('AUTH', 'Failed login attempt - invalid password', { userId: userRecord.id });
         return res.status(401).json({ error: 'INVALID_CREDENTIALS', message: 'Invalid email or password.' });
       }
 
       const token = generateAuthToken({ userId: userRecord.id, email: userRecord.email });
+      logger.info('AUTH', `User logged in successfully: ${userRecord.email}`, { userId: userRecord.id });
 
       res.json({
         success: true,
@@ -187,7 +242,84 @@ async function startServer() {
         user: userRecord.profile,
       });
     } catch {
+      logger.error('AUTH', 'Unexpected login processing error');
       res.status(500).json({ error: 'LOGIN_FAILED', message: 'Authentication processing failed.' });
+    }
+  });
+
+  // Password Recovery - Request Reset (Protected against account enumeration)
+  app.post('/api/auth/forgot-password', authRateLimiter, (req, res) => {
+    try {
+      const { email } = req.body;
+      if (!email || typeof email !== 'string') {
+        return res.status(400).json({ error: 'MISSING_EMAIL', message: 'Email address is required.' });
+      }
+
+      const user = db.getUserByEmail(email);
+      if (user) {
+        const resetToken = generatePasswordResetToken(user.id, user.email, user.passwordHash);
+        logger.info('AUTH', `Password reset token generated for user ${user.id}`);
+        // In staging/local demo, log diagnostic info safely
+        if (process.env.NODE_ENV !== 'production') {
+          logger.info('AUTH', `[LOCAL DEV ONLY] Reset Token: ${resetToken}`);
+        }
+      }
+
+      // Constant message response regardless of user existence prevents account enumeration
+      res.json({
+        success: true,
+        message: 'If an account matches the provided email, password recovery instructions have been initiated.',
+      });
+    } catch {
+      res.status(500).json({ error: 'RECOVERY_FAILED', message: 'Unable to process recovery request.' });
+    }
+  });
+
+  // Password Recovery - Submit New Password
+  app.post('/api/auth/reset-password', authRateLimiter, (req, res) => {
+    try {
+      const { token, newPassword } = req.body;
+      if (!token || !newPassword || typeof token !== 'string' || typeof newPassword !== 'string') {
+        return res.status(400).json({ error: 'INVALID_PAYLOAD', message: 'Reset token and new password are required.' });
+      }
+
+      if (newPassword.length < 6) {
+        return res.status(400).json({ error: 'WEAK_PASSWORD', message: 'Password must be at least 6 characters.' });
+      }
+
+      // Read unverified payload to fetch current user's password hash
+      const [payloadBase64] = token.split('.');
+      if (!payloadBase64) {
+        return res.status(400).json({ error: 'INVALID_TOKEN', message: 'Invalid or expired password reset token.' });
+      }
+
+      let parsedPayload: any;
+      try {
+        parsedPayload = JSON.parse(Buffer.from(payloadBase64, 'base64url').toString('utf-8'));
+      } catch {
+        return res.status(400).json({ error: 'INVALID_TOKEN', message: 'Invalid or expired password reset token.' });
+      }
+
+      const user = db.getUserById(parsedPayload.userId);
+      if (!user) {
+        return res.status(400).json({ error: 'INVALID_TOKEN', message: 'Invalid or expired password reset token.' });
+      }
+
+      const verified = verifyPasswordResetToken(token, user.passwordHash);
+      if (!verified) {
+        return res.status(400).json({ error: 'INVALID_TOKEN', message: 'Invalid or expired password reset token.' });
+      }
+
+      const { hash, salt } = hashPassword(newPassword);
+      db.updateUserPassword(user.id, hash, salt);
+      logger.security('AUTH', `Password reset successful for user ${user.id}`);
+
+      res.json({
+        success: true,
+        message: 'Password has been reset successfully. Please log in with your new credentials.',
+      });
+    } catch {
+      res.status(500).json({ error: 'RESET_FAILED', message: 'Failed to reset password.' });
     }
   });
 
@@ -236,6 +368,10 @@ async function startServer() {
       const syncResult = db.syncUserState(req.user!.userId, req.body);
 
       if (syncResult.conflict) {
+        logger.warn('SYNC', `State conflict detected for user ${req.user!.userId}`, {
+          clientVersion: syncResult.clientVersion,
+          serverVersion: syncResult.serverVersion,
+        });
         return res.status(409).json({
           error: 'STATE_CONFLICT',
           message: 'Server possesses a newer revision of state. Conflict resolution required.',
@@ -605,11 +741,50 @@ ${sanitizedQuestion}
   });
 
   // -------------------------------------------------------------
-  // HEALTH & BROKER STATUS
+  // HEALTH, READINESS & OBSERVABILITY
   // -------------------------------------------------------------
 
+  // Liveness probe (process is running)
   app.get('/api/health', (_req, res) => {
-    res.json({ status: 'ok', timestamp: Date.now(), mode: 'production_ready' });
+    res.json({
+      status: 'ok',
+      uptime: process.uptime(),
+      timestamp: Date.now(),
+      mode: 'production_ready',
+    });
+  });
+
+  // Readiness probe (checks database readiness and configuration status)
+  app.get('/api/ready', (_req, res) => {
+    try {
+      const isDbReady = typeof db.isReady === 'function' ? db.isReady() : true;
+      const stats = typeof db.getStats === 'function' ? db.getStats() : { userCount: 0, adapter: 'unknown' };
+
+      if (!isDbReady) {
+        return res.status(503).json({
+          status: 'error',
+          message: 'Database is initializing or not ready to accept queries.',
+        });
+      }
+
+      res.json({
+        status: 'ready',
+        database: {
+          ready: true,
+          adapter: stats.adapter,
+          userCount: stats.userCount,
+        },
+        memoryUsage: process.memoryUsage(),
+        uptime: process.uptime(),
+        timestamp: Date.now(),
+      });
+    } catch (err: any) {
+      res.status(503).json({
+        status: 'error',
+        message: 'Readiness probe failed',
+        error: err?.message,
+      });
+    }
   });
 
   // Broker Status & Safety Route (Public informational route)
@@ -651,6 +826,7 @@ ${sanitizedQuestion}
   });
 
   app.post('/api/broker/orders/submit', (_req, res) => {
+    logger.security('BROKER', 'Live broker order execution attempted and blocked');
     return res.status(403).json({
       success: false,
       error: 'LIVE_TRADING_DISABLED',
@@ -683,10 +859,29 @@ ${sanitizedQuestion}
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`LIFE OS Server running on http://0.0.0.0:${PORT}`);
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    logger.info('SYSTEM', `LIFE OS Server running on http://0.0.0.0:${PORT}`);
   });
+
+  // Graceful Shutdown Handler
+  const handleShutdown = async (signal: string) => {
+    logger.info('SYSTEM', `Received ${signal}. Initiating graceful shutdown...`);
+    server.close(async () => {
+      try {
+        if (typeof db.close === 'function') {
+          await db.close();
+          logger.info('DATABASE', 'Database connections and storage flushed cleanly.');
+        }
+      } catch (err) {
+        logger.error('SYSTEM', 'Error closing database on shutdown', { error: String(err) });
+      }
+      logger.info('SYSTEM', 'Graceful shutdown complete.');
+      process.exit(0);
+    });
+  };
+
+  process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+  process.on('SIGINT', () => handleShutdown('SIGINT'));
 }
 
 startServer();
-

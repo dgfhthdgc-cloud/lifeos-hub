@@ -930,6 +930,20 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
 
     this.db!.run('BEGIN TRANSACTION;');
     try {
+      if (payload.profile && typeof payload.profile === 'object') {
+        const p = payload.profile;
+        const currentProfile = currentState.profile;
+        const name = typeof p.name === 'string' && p.name.trim() ? p.name.trim().slice(0, 100) : currentProfile.name;
+        const title = typeof p.title === 'string' && p.title.trim() ? p.title.trim().slice(0, 100) : currentProfile.title;
+        const avatarUrl = typeof p.avatarUrl === 'string' ? p.avatarUrl : currentProfile.avatarUrl;
+        const settings = p.settings && typeof p.settings === 'object' ? p.settings : currentProfile.settings;
+
+        this.db!.run(
+          `UPDATE user_profiles SET name = ?, title = ?, avatar_url = ?, settings_json = ? WHERE user_id = ?`,
+          [name, title, avatarUrl || null, JSON.stringify(settings || {}), userId]
+        );
+      }
+
       if (Array.isArray(payload.tasks)) {
         this.db!.run('DELETE FROM tasks WHERE user_id = ?', [userId]);
         for (const t of payload.tasks) {
@@ -1899,4 +1913,51 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
       throw err;
     }
   }
+
+  public updateUserPassword(userId: string, passwordHash: string, salt: string): boolean {
+    this.ensureInitialized();
+    try {
+      this.db!.run('UPDATE users SET password_hash = ?, salt = ? WHERE id = ?', [passwordHash, salt, userId]);
+      this.saveToDisk();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  public isReady(): boolean {
+    return this.isInitialized && this.db !== null;
+  }
+
+  public getStats(): { userCount: number; adapter: string; path?: string } {
+    this.ensureInitialized();
+    try {
+      const stmt = this.db!.prepare('SELECT COUNT(*) as count FROM users');
+      stmt.step();
+      const row = stmt.getAsObject();
+      stmt.free();
+      return {
+        userCount: Number(row.count) || 0,
+        adapter: 'sqlite',
+        path: this.dbPath,
+      };
+    } catch {
+      return { userCount: 0, adapter: 'sqlite', path: this.dbPath };
+    }
+  }
+
+  public async close(): Promise<void> {
+    if (this.db) {
+      try {
+        this.saveToDisk();
+        this.db.close();
+      } catch (err) {
+        console.warn('Error during SQLite database close:', err);
+      } finally {
+        this.db = null;
+        this.isInitialized = false;
+      }
+    }
+  }
 }
+

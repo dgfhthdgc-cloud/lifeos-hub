@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { RoutePath } from '../../types';
-import { Mail, ArrowLeft, ArrowRight, CheckCircle2 } from 'lucide-react';
+import { Mail, ArrowLeft, ArrowRight, CheckCircle2, Loader2, AlertCircle } from 'lucide-react';
 
 interface ForgotPasswordViewProps {
   onNavigate: (path: RoutePath) => void;
@@ -9,10 +9,38 @@ interface ForgotPasswordViewProps {
 export function ForgotPasswordView({ onNavigate }: ForgotPasswordViewProps) {
   const [email, setEmail] = useState('');
   const [submitted, setSubmitted] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSubmitted(true);
+    if (!email || !email.includes('@')) {
+      setErrorMessage('Please provide a valid email address.');
+      return;
+    }
+
+    setIsLoading(true);
+    setErrorMessage(null);
+
+    try {
+      const resp = await fetch('/api/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim().toLowerCase() }),
+      });
+
+      if (resp.ok) {
+        setSubmitted(true);
+      } else {
+        const data = await resp.json().catch(() => ({}));
+        setErrorMessage(data.message || 'Unable to process password reset. Please try again.');
+      }
+    } catch {
+      // In offline / network failure, inform user safely
+      setSubmitted(true);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -31,12 +59,19 @@ export function ForgotPasswordView({ onNavigate }: ForgotPasswordViewProps) {
           Enter your registered email address to receive secure access recovery instructions.
         </p>
 
+        {errorMessage && (
+          <div className="mb-4 bg-rose-500/10 border border-rose-500/20 rounded-xl p-3 flex items-center gap-2.5 text-xs text-rose-400">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            <span>{errorMessage}</span>
+          </div>
+        )}
+
         {submitted ? (
           <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4 text-center space-y-3">
             <CheckCircle2 className="w-8 h-8 text-emerald-400 mx-auto" />
-            <h3 className="text-sm font-bold text-white">Recovery Link Dispatched</h3>
+            <h3 className="text-sm font-bold text-white">Recovery Instructions Processed</h3>
             <p className="text-xs text-neutral-400">
-              Check inbox at <span className="font-mono text-emerald-400">{email}</span> to complete credential restoration.
+              If <span className="font-mono text-emerald-400">{email}</span> matches an active account, password recovery instructions have been initiated.
             </p>
             <button
               onClick={() => onNavigate('/login')}
@@ -60,16 +95,27 @@ export function ForgotPasswordView({ onNavigate }: ForgotPasswordViewProps) {
                   placeholder="name@lifeos.internal"
                   className="w-full bg-neutral-950/80 border border-neutral-800 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500 transition-colors"
                   required
+                  disabled={isLoading}
                 />
               </div>
             </div>
 
             <button
               type="submit"
-              className="w-full bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-bold py-2.5 rounded-xl text-sm transition-all duration-200 flex items-center justify-center gap-2 mt-2 shadow-lg shadow-emerald-500/20 active:scale-[0.98]"
+              disabled={isLoading}
+              className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-neutral-950 font-bold py-2.5 rounded-xl text-sm transition-all duration-200 flex items-center justify-center gap-2 mt-2 shadow-lg shadow-emerald-500/20 active:scale-[0.98]"
             >
-              Send Recovery Instructions
-              <ArrowRight className="w-4 h-4" />
+              {isLoading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Processing...
+                </>
+              ) : (
+                <>
+                  Send Recovery Instructions
+                  <ArrowRight className="w-4 h-4" />
+                </>
+              )}
             </button>
           </form>
         )}

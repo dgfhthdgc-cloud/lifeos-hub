@@ -262,4 +262,13 @@ export class PostgresDatabaseAdapter implements DatabaseAdapter {
   public updateGoalProgress(userId: string, goalId: string, progress: number, milestoneId?: string, clientEventId?: string, baseVersion?: number): GoalProgressResult { throw new Error('Use active database instance.'); }
   public recordXpTransaction(userId: string, amount: number, reason: string, category?: XpCategory, clientEventId?: string): any { throw new Error('Use active database instance.'); }
   public addAiMessage(userId: string, message: AIChatMessage): void {}
+  public updateUserPassword(userId: string, passwordHash: string, salt: string): boolean { return false; }
+  public isReady(): boolean { return this.isInitialized; }
+  public getStats(): { userCount: number; adapter: string } { return { userCount: 0, adapter: 'postgres' }; }
+  public async close(): Promise<void> {
+    if (this.pool) {
+      await this.pool.end();
+      this.isInitialized = false;
+    }
+  }
 }
