@@ -75,8 +75,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const normalizedEmail = email?.trim().toLowerCase() || 'user@lifeos.local';
       let loggedUser = Storage.getUser();
+      const previousDemoMode = localStorage.getItem(DEMO_MODE_KEY) === '1';
+      const isLegacyDemoProfile = loggedUser?.id === DEMO_USER.id && !previousDemoMode;
 
-      if (!loggedUser || loggedUser.email.toLowerCase() !== normalizedEmail) {
+      if (
+        !loggedUser ||
+        loggedUser.email.toLowerCase() !== normalizedEmail ||
+        isLegacyDemoProfile
+      ) {
         loggedUser = {
           ...INITIAL_USER,
           id: `usr_${Date.now()}`,
@@ -155,7 +161,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const matchedRank = [...LEVEL_RANKS].reverse().find((r) => newLevel >= r.level);
       const newTitle = matchedRank?.title || prev.title;
 
-      // Global activity streak: one increase per calendar day, regardless of activity type.
       const today = getLocalDateString();
       const lastActivity = localStorage.getItem(LAST_ACTIVITY_KEY);
       let nextStreak = prev.streakDays || 0;
@@ -175,7 +180,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       Storage.setUser(updated);
 
-      // Keep the dedicated gamification streak model synchronized with the user profile.
       try {
         const streak = Storage.getStreakData();
         const multiplier = calculateStreakMultiplier(nextStreak);
