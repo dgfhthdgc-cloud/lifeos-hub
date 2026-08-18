@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { UserProfile } from '../types';
 import { Storage, INITIAL_USER, DEMO_USER } from '../lib/storage';
-import { getXpRequiredForLevel, LEVEL_RANKS } from '../lib/gamification';
+import { calculateStreakMultiplier, getXpRequiredForLevel, LEVEL_RANKS } from '../lib/gamification';
 
 interface AuthContextType {
   user: UserProfile | null;
@@ -174,6 +174,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       };
 
       Storage.setUser(updated);
+
+      // Keep the dedicated gamification streak model synchronized with the user profile.
+      try {
+        const streak = Storage.getStreakData();
+        const multiplier = calculateStreakMultiplier(nextStreak);
+        const milestones = streak.milestones.map((milestone) => ({
+          ...milestone,
+          reached: milestone.reached || nextStreak >= milestone.days,
+        }));
+        Storage.setStreakData({
+          ...streak,
+          currentStreak: nextStreak,
+          bestStreak: Math.max(streak.bestStreak, nextStreak),
+          multiplier,
+          lastActiveDate: today,
+          milestones,
+        });
+      } catch {
+        // Keep the XP path resilient if legacy streak data is malformed.
+      }
 
       try {
         Storage.recordXpTransaction({
