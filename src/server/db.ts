@@ -9,8 +9,23 @@ export const jsonDb = new JsonDatabaseAdapter();
 
 let activeDb: DatabaseAdapter = sqlDb;
 
+function isValidPostgresUrl(urlStr: string | undefined): boolean {
+  if (!urlStr || typeof urlStr !== 'string') return false;
+  const trimmed = urlStr.trim();
+  if (!trimmed.startsWith('postgres://') && !trimmed.startsWith('postgresql://')) {
+    return false;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    return !!parsed.hostname && parsed.hostname !== 'base' && !parsed.hostname.includes(' ');
+  } catch {
+    return false;
+  }
+}
+
 export async function initDatabase(): Promise<DatabaseAdapter> {
-  if (process.env.DATABASE_URL) {
+  const dbUrl = process.env.DATABASE_URL;
+  if (isValidPostgresUrl(dbUrl)) {
     try {
       console.log('[Database] Connecting to PostgreSQL database...');
       const pgDb = new PostgresDatabaseAdapter();
@@ -21,6 +36,8 @@ export async function initDatabase(): Promise<DatabaseAdapter> {
     } catch (err: any) {
       console.warn('[Database] PostgreSQL connection failed, falling back to durable SQLite:', err?.message);
     }
+  } else if (dbUrl && dbUrl.trim() !== '') {
+    console.log('[Database] DATABASE_URL is not a valid postgres connection string. Using durable SQLite.');
   }
 
   console.log('[Database] Initializing durable SQLite database...');
