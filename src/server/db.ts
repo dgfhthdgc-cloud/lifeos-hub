@@ -10,7 +10,20 @@ export const jsonDb = new JsonDatabaseAdapter();
 
 let activeDb: DatabaseAdapter = sqlDb;
 
-function isValidPostgresUrl(urlStr: string | undefined): boolean {
+export function sanitizeDatabaseUrl(urlStr?: string | null): string {
+  if (!urlStr) return '[NONE]';
+  try {
+    const parsed = new URL(urlStr);
+    if (parsed.password) {
+      parsed.password = '***';
+    }
+    return parsed.toString();
+  } catch {
+    return '[INVALID_URL]';
+  }
+}
+
+export function isValidPostgresUrl(urlStr: string | undefined | null): boolean {
   if (!urlStr || typeof urlStr !== 'string') return false;
   const trimmed = urlStr.trim();
   if (!trimmed.startsWith('postgres://') && !trimmed.startsWith('postgresql://')) {
@@ -27,6 +40,13 @@ function isValidPostgresUrl(urlStr: string | undefined): boolean {
 export async function initDatabase(): Promise<DatabaseAdapter> {
   const dbUrl = process.env.DATABASE_URL;
   const requirePostgres = process.env.REQUIRE_POSTGRES === 'true';
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  if (requirePostgres && !isValidPostgresUrl(dbUrl)) {
+    throw new Error(
+      'FATAL DATABASE CONFIGURATION: REQUIRE_POSTGRES is true but DATABASE_URL is missing or not a valid PostgreSQL connection string.'
+    );
+  }
 
   if (requirePostgres && !isValidPostgresUrl(dbUrl)) {
     throw new Error(
@@ -36,22 +56,26 @@ export async function initDatabase(): Promise<DatabaseAdapter> {
 
   if (isValidPostgresUrl(dbUrl)) {
     try {
-      logger.info('DATABASE', 'Connecting to PostgreSQL database cluster...');
+      logger.info('DATABASE', `Connecting to PostgreSQL cluster: ${sanitizeDatabaseUrl(dbUrl)}`);
       const pgDb = new PostgresDatabaseAdapter();
       await pgDb.initialize();
-      logger.info('DATABASE', 'PostgreSQL database connected and schema initialized.');
+      logger.info('DATABASE', 'PostgreSQL database connected and schema verified.');
       activeDb = pgDb;
       return activeDb;
     } catch (err: any) {
-      logger.error('DATABASE', 'PostgreSQL connection failed', { error: err?.message });
-      if (requirePostgres) {
+      logger.error('DATABASE', 'PostgreSQL connection failed', {
+        sanitizedUrl: sanitizeDatabaseUrl(dbUrl),
+      });
+
+      if (requirePostgres || (isProduction && process.env.ALLOW_SQLITE_FALLBACK !== 'true')) {
         throw new Error(
-          `FATAL DATABASE ERROR: REQUIRE_POSTGRES is true but connection to PostgreSQL failed: ${err?.message}`
+          'FATAL DATABASE ERROR: PostgreSQL connection failed and SQLite fallback is disallowed in this configuration.'
         );
       }
+
       logger.warn(
         'DATABASE',
-        'Falling back to durable SQLite engine. (Note: SQLite is optimized for single-instance container deployments; PostgreSQL is recommended for multi-instance scaling).'
+        'Falling back to durable SQLite engine. (Note: SQLite is optimized for development and single-instance container deployments).'
       );
     }
   } else if (dbUrl && dbUrl.trim() !== '') {
@@ -69,7 +93,7 @@ export async function initDatabase(): Promise<DatabaseAdapter> {
       logger.info('DATABASE', `Migrated ${summary.usersMigrated} legacy users into SQLite.`);
     }
   } catch (err: any) {
-    logger.warn('DATABASE', 'Legacy migration notice', { error: err?.message });
+    logger.warn('DATABASE', 'Legacy migration notice');
   }
 
   activeDb = sqlDb;
@@ -92,4 +116,3 @@ export const db: DatabaseAdapter = new Proxy({} as DatabaseAdapter, {
 });
 
 export type { DatabaseAdapter };
-
