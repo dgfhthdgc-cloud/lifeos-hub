@@ -169,22 +169,43 @@ async function startServer() {
     category: 'XP',
   });
 
-  // Request Auth Guard Middleware
-  const requireAuth = (req: Request, res: Response, next: NextFunction) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'UNAUTHORIZED', message: 'Authentication token required.' });
-    }
+  // Request Auth Guard Middleware with Session/Role Invalidation
+  const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'UNAUTHORIZED', message: 'Authentication token required.' });
+      }
 
-    const token = authHeader.split(' ')[1];
-    const payload = verifyAuthToken(token);
-    if (!payload) {
-      logger.security('AUTH', 'Invalid or expired token provided in request', { path: req.path, ip: req.ip });
-      return res.status(401).json({ error: 'INVALID_TOKEN', message: 'Session token invalid or expired.' });
-    }
+      const token = authHeader.split(' ')[1];
+      const payload = verifyAuthToken(token);
+      if (!payload) {
+        logger.security('AUTH', 'Invalid or expired token provided in request', { path: req.path, ip: req.ip });
+        return res.status(401).json({ error: 'INVALID_TOKEN', message: 'Session token invalid or expired.' });
+      }
 
-    req.user = { userId: payload.userId, email: payload.email, role: payload.role || 'user' };
-    next();
+      // Check token version freshness against database
+      if (typeof db.getUserTokenVersion === 'function') {
+        const currentVersion = await db.getUserTokenVersion(payload.userId);
+        const tokenVersion = payload.tokenVersion || 1;
+        if (currentVersion > tokenVersion) {
+          logger.security('AUTH', 'Session token revoked or invalidated by password change/admin action', {
+            userId: payload.userId,
+            tokenVersion,
+            currentVersion,
+          });
+          return res.status(401).json({
+            error: 'SESSION_REVOKED',
+            message: 'Session has been invalidated due to a password change or security update. Please log in again.',
+          });
+        }
+      }
+
+      req.user = { userId: payload.userId, email: payload.email, role: payload.role || 'user' };
+      next();
+    } catch (err: any) {
+      return res.status(500).json({ error: 'AUTH_CHECK_FAILED', message: err?.message || 'Authentication check failed' });
+    }
   };
 
   // Administrator RBAC Guard Middleware
@@ -240,7 +261,12 @@ async function startServer() {
 
       const { hash, salt } = hashPassword(password);
       const userRecord = await db.createUser(normalizedEmail, hash, salt, typeof name === 'string' ? name : '', role);
-      const token = generateAuthToken({ userId: userRecord.id, email: userRecord.email, role: userRecord.role || 'user' });
+      const token = generateAuthToken({
+        userId: userRecord.id,
+        email: userRecord.email,
+        role: userRecord.role || 'user',
+        tokenVersion: userRecord.tokenVersion || 1,
+      });
 
       serverTelemetry.recordFunnelStep(userRecord.id, 'signup');
       logger.info('AUTH', `New user registered: ${userRecord.email} [role: ${userRecord.role || 'user'}]`, { userId: userRecord.id });
@@ -275,7 +301,12 @@ async function startServer() {
         return res.status(401).json({ error: 'INVALID_CREDENTIALS', message: 'Invalid email or password.' });
       }
 
-      const token = generateAuthToken({ userId: userRecord.id, email: userRecord.email, role: userRecord.role || 'user' });
+      const token = generateAuthToken({
+        userId: userRecord.id,
+        email: userRecord.email,
+        role: userRecord.role || 'user',
+        tokenVersion: userRecord.tokenVersion || 1,
+      });
       logger.info('AUTH', `User logged in successfully: ${userRecord.email} [role: ${userRecord.role || 'user'}]`, { userId: userRecord.id });
 
       res.json({
@@ -808,11 +839,10 @@ ${sanitizedQuestion}
     });
   });
 
-  // Readiness probe (checks database readiness and configuration status)
+  // Readiness probe (public health check - minimal operational status without leaking internals)
   app.get('/api/ready', async (_req, res) => {
     try {
       const isDbReady = typeof db.isReady === 'function' ? await db.isReady() : true;
-      const stats = typeof db.getStats === 'function' ? await db.getStats() : { userCount: 0, adapter: 'unknown' };
 
       if (!isDbReady) {
         return res.status(503).json({
@@ -823,12 +853,6 @@ ${sanitizedQuestion}
 
       res.json({
         status: 'ready',
-        database: {
-          ready: true,
-          adapter: stats.adapter,
-          userCount: stats.userCount,
-        },
-        memoryUsage: process.memoryUsage(),
         uptime: process.uptime(),
         timestamp: Date.now(),
       });
@@ -838,6 +862,28 @@ ${sanitizedQuestion}
         message: 'Readiness probe failed',
         error: err?.message,
       });
+    }
+  });
+
+  // Admin Diagnostics / Detailed Readiness Probe
+  app.get('/api/admin/ready', requireAdmin, async (_req, res) => {
+    try {
+      const isDbReady = typeof db.isReady === 'function' ? await db.isReady() : true;
+      const stats = typeof db.getStats === 'function' ? await db.getStats() : { userCount: 0, adapter: 'unknown' };
+
+      res.json({
+        status: isDbReady ? 'ready' : 'degraded',
+        database: {
+          ready: isDbReady,
+          adapter: stats.adapter,
+          userCount: stats.userCount,
+        },
+        memoryUsage: process.memoryUsage(),
+        uptime: process.uptime(),
+        timestamp: Date.now(),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: 'ADMIN_READY_FAILED', message: err?.message });
     }
   });
 
@@ -851,7 +897,7 @@ ${sanitizedQuestion}
     });
   });
 
-  // Broker Endpoints Guarded with requireAuth
+  // Paper Trading Broker Endpoints Guarded with requireAuth & Server Authority
   app.get('/api/broker/account', requireAuth, (_req, res) => {
     res.json({
       accountId: 'paper_sim_env_01',
@@ -871,29 +917,85 @@ ${sanitizedQuestion}
     });
   });
 
-  app.get('/api/broker/positions', requireAuth, (_req, res) => {
-    res.json([]);
+  app.get('/api/broker/positions', requireAuth, async (req, res) => {
+    try {
+      if (typeof db.getPaperPositions === 'function') {
+        const positions = await db.getPaperPositions(req.user!.userId);
+        return res.json(positions);
+      }
+      res.json([]);
+    } catch (err: any) {
+      res.status(500).json({ error: 'GET_POSITIONS_FAILED', message: err?.message });
+    }
   });
 
-  app.get('/api/broker/orders', requireAuth, (_req, res) => {
-    res.json([]);
+  app.get('/api/broker/orders', requireAuth, async (req, res) => {
+    try {
+      if (typeof db.getPaperOrders === 'function') {
+        const orders = await db.getPaperOrders(req.user!.userId);
+        return res.json(orders);
+      }
+      res.json([]);
+    } catch (err: any) {
+      res.status(500).json({ error: 'GET_ORDERS_FAILED', message: err?.message });
+    }
   });
 
-  app.post('/api/broker/orders/submit', (_req, res) => {
-    logger.security('BROKER', 'Live broker order execution attempted and blocked');
-    return res.status(403).json({
-      success: false,
-      error: 'LIVE_TRADING_DISABLED',
-      message: 'Live real-money order execution is disabled. Please route all orders through PaperBroker.',
-    });
+  app.post('/api/broker/orders/submit', requireAuth, async (req, res) => {
+    try {
+      const { symbol, side, type, quantity, limitPrice } = req.body;
+      if (!symbol || !side || !quantity || typeof quantity !== 'number' || quantity <= 0) {
+        return res.status(400).json({ error: 'INVALID_ORDER', message: 'Symbol, side, and positive quantity are required.' });
+      }
+
+      if (typeof db.createPaperOrder === 'function') {
+        const orderSide: 'BUY' | 'SELL' = side === 'sell' || side === 'SELL' ? 'SELL' : 'BUY';
+        const orderType: 'MARKET' | 'LIMIT' | 'STOP' = type === 'LIMIT' || type === 'limit' ? 'LIMIT' : type === 'STOP' || type === 'stop' ? 'STOP' : 'MARKET';
+        const order = await db.createPaperOrder(req.user!.userId, {
+          symbol: String(symbol).toUpperCase(),
+          side: orderSide,
+          type: orderType,
+          quantity,
+          price: typeof limitPrice === 'number' ? limitPrice : undefined,
+          status: 'FILLED',
+        });
+
+        logger.info('BROKER', `Paper order placed: ${order.side} ${order.quantity} ${order.symbol} (${order.status})`, {
+          userId: req.user!.userId,
+          orderId: order.id,
+        });
+
+        return res.json({ success: true, order });
+      }
+
+      res.status(500).json({ error: 'BROKER_UNAVAILABLE', message: 'Paper trading storage engine not initialized.' });
+    } catch (err: any) {
+      res.status(500).json({ error: 'SUBMIT_ORDER_FAILED', message: err?.message });
+    }
   });
 
-  app.post('/api/broker/orders/cancel/:id', requireAuth, (req, res) => {
-    res.json({ success: true, message: `Order ${req.params.id} cancelled.` });
+  app.post('/api/broker/orders/cancel/:id', requireAuth, async (req, res) => {
+    try {
+      if (typeof db.cancelPaperOrder === 'function') {
+        const result = await db.cancelPaperOrder(req.user!.userId, req.params.id);
+        return res.json(result);
+      }
+      res.json({ success: true, message: `Order ${req.params.id} cancelled.` });
+    } catch (err: any) {
+      res.status(500).json({ error: 'CANCEL_ORDER_FAILED', message: err?.message });
+    }
   });
 
-  app.post('/api/broker/positions/close/:id', requireAuth, (_req, res) => {
-    res.json({ success: true, pnl: 0 });
+  app.post('/api/broker/positions/close/:id', requireAuth, async (req, res) => {
+    try {
+      if (typeof db.closePaperPosition === 'function') {
+        const result = await db.closePaperPosition(req.user!.userId, req.params.id, req.body.exitPrice);
+        return res.json(result);
+      }
+      res.json({ success: true, pnl: 0 });
+    } catch (err: any) {
+      res.status(500).json({ error: 'CLOSE_POSITION_FAILED', message: err?.message });
+    }
   });
 
   // -------------------------------------------------------------
@@ -913,22 +1015,45 @@ ${sanitizedQuestion}
     }
   });
 
-  app.post('/api/telemetry/events', (req, res) => {
+  app.post('/api/telemetry/events', async (req, res) => {
     try {
       const { events } = req.body;
       if (Array.isArray(events)) {
         for (const evt of events) {
           if (evt && typeof evt === 'object') {
-            serverTelemetry.recordEvent({
-              type: evt.type || 'api_request',
-              userId: req.user?.userId || evt.userId,
+            const eventType = evt.type || 'api_request';
+            const userId = req.user?.userId || evt.userId || 'anonymous';
+            const payload = {
+              type: eventType,
+              userId,
               category: evt.category,
               durationMs: evt.durationMs,
               statusCode: evt.statusCode,
               route: evt.route,
               status: evt.status,
               metadata: evt.metadata,
-            });
+            };
+
+            serverTelemetry.recordEvent(payload);
+
+            if (typeof db.recordTelemetryEvent === 'function') {
+              try {
+                await db.recordTelemetryEvent({
+                  id: `telem_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+                  userId,
+                  type: eventType,
+                  category: evt.category,
+                  durationMs: evt.durationMs,
+                  statusCode: evt.statusCode,
+                  route: evt.route,
+                  status: evt.status,
+                  metadata: evt.metadata,
+                  timestamp: new Date().toISOString(),
+                });
+              } catch {
+                // Non-blocking durable telemetry recording
+              }
+            }
           }
         }
       }
@@ -938,7 +1063,7 @@ ${sanitizedQuestion}
     }
   });
 
-  app.post('/api/telemetry/feedback', requireAuth, (req, res) => {
+  app.post('/api/telemetry/feedback', requireAuth, async (req, res) => {
     try {
       const { rating, type, category, comment } = req.body;
       if (typeof rating !== 'number' || rating < 1 || rating > 5) {
@@ -954,6 +1079,23 @@ ${sanitizedQuestion}
         sentiment: rating >= 4 ? 'positive' : rating <= 2 ? 'negative' : 'neutral',
       });
 
+      if (typeof db.recordUserFeedback === 'function') {
+        try {
+          await db.recordUserFeedback({
+            id: feedback.id,
+            userId: req.user!.userId,
+            rating: feedback.rating,
+            type: feedback.type,
+            category: feedback.category,
+            comment: feedback.comment,
+            sentiment: feedback.sentiment,
+            timestamp: feedback.timestamp,
+          });
+        } catch {
+          // Non-blocking
+        }
+      }
+
       logger.info('SYSTEM', `User feedback recorded: ${feedback.rating}★ (${feedback.type})`, {
         userId: req.user!.userId,
         rating: feedback.rating,
@@ -965,8 +1107,12 @@ ${sanitizedQuestion}
     }
   });
 
-  app.get('/api/telemetry/feedback', requireAdmin, (_req, res) => {
+  app.get('/api/telemetry/feedback', requireAdmin, async (_req, res) => {
     try {
+      if (typeof db.getDurableFeedback === 'function') {
+        const feedback = await db.getDurableFeedback();
+        return res.json({ success: true, count: feedback.length, feedback });
+      }
       const feedback = serverTelemetry.getFeedback();
       res.json({ success: true, count: feedback.length, feedback });
     } catch (err: any) {
@@ -1024,6 +1170,9 @@ ${sanitizedQuestion}
       }
 
       const result = await backupManager.restoreFromBackup(filepath);
+      if (typeof db.reopen === 'function') {
+        await db.reopen();
+      }
       logger.warn('DATABASE', `Database restored from backup: ${filepath}`, {
         restoredTables: result.restoredTables,
         userCount: result.userCount,

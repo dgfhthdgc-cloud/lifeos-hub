@@ -18,6 +18,10 @@ import {
 import {
   DatabaseAdapter,
   SyncResult,
+  SyncOperation,
+  SyncOperationsResult,
+  PaperOrderRecord,
+  PaperPositionRecord,
   TaskCompletionResult,
   HabitCompletionResult,
   GoalProgressResult,
@@ -1059,8 +1063,205 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
     if (!user) return false;
     user.passwordHash = passwordHash;
     user.salt = salt;
+    user.tokenVersion = (user.tokenVersion || 1) + 1;
     this.saveToDisk();
     return true;
+  }
+
+  public invalidateUserSessions(userId: string): void {
+    const user = this.users[userId];
+    if (user) {
+      user.tokenVersion = (user.tokenVersion || 1) + 1;
+      this.saveToDisk();
+    }
+  }
+
+  public getUserTokenVersion(userId: string): number {
+    const user = this.users[userId];
+    return user ? user.tokenVersion || 1 : 1;
+  }
+
+  public applySyncOperations(userId: string, operations: SyncOperation[], baseVersion?: number): SyncOperationsResult {
+    const state = this.getUserState(userId);
+    const currentVersion = state.version || 1;
+
+    if (typeof baseVersion === 'number' && baseVersion < currentVersion) {
+      return {
+        success: false,
+        conflict: true,
+        serverVersion: currentVersion,
+        clientVersion: baseVersion,
+        appliedCount: 0,
+        rejectedCount: operations.length,
+        operationResults: operations.map((op) => ({
+          operationId: op.operationId,
+          success: false,
+          error: 'BASE_VERSION_STALE',
+        })),
+        state,
+      };
+    }
+
+    let appliedCount = 0;
+    let rejectedCount = 0;
+    const operationResults: SyncOperationsResult['operationResults'] = [];
+
+    for (const op of operations) {
+      try {
+        let opResult: any = null;
+        switch (op.type) {
+          case 'CREATE_TASK':
+            opResult = this.createTask(userId, op.payload, op.clientEventId, state.version);
+            break;
+          case 'UPDATE_TASK':
+            opResult = this.updateTask(userId, op.entityId || op.payload?.id, op.payload, op.clientEventId, state.version);
+            break;
+          case 'DELETE_TASK':
+            opResult = this.deleteTask(userId, op.entityId || op.payload?.id, op.clientEventId, state.version);
+            break;
+          case 'COMPLETE_TASK':
+            opResult = this.completeTask(userId, op.entityId || op.payload?.id, op.clientEventId, state.version);
+            break;
+          case 'CREATE_HABIT':
+            opResult = this.createHabit(userId, op.payload, op.clientEventId, state.version);
+            break;
+          case 'UPDATE_HABIT':
+            opResult = this.updateHabit(userId, op.entityId || op.payload?.id, op.payload, op.clientEventId, state.version);
+            break;
+          case 'DELETE_HABIT':
+            opResult = this.deleteHabit(userId, op.entityId || op.payload?.id, op.clientEventId, state.version);
+            break;
+          case 'COMPLETE_HABIT':
+            opResult = this.completeHabit(userId, op.entityId || op.payload?.id, op.payload?.date, op.clientEventId, state.version);
+            break;
+          case 'UPDATE_GOAL_PROGRESS':
+            opResult = this.updateGoalProgress(userId, op.entityId || op.payload?.id, op.payload?.progress || 0, op.payload?.milestoneId, op.clientEventId, state.version);
+            break;
+          case 'UPDATE_PROFILE_SETTINGS':
+            opResult = this.updateUserProfile(userId, op.payload);
+            break;
+          default:
+            break;
+        }
+
+        appliedCount++;
+        operationResults.push({
+          operationId: op.operationId,
+          success: true,
+          result: opResult,
+        });
+      } catch (err: any) {
+        rejectedCount++;
+        operationResults.push({
+          operationId: op.operationId,
+          success: false,
+          error: err?.message || 'Operation execution failed',
+        });
+      }
+    }
+
+    const updatedState = this.getUserState(userId);
+    return {
+      success: rejectedCount === 0,
+      serverVersion: updatedState.version,
+      clientVersion: baseVersion,
+      appliedCount,
+      rejectedCount,
+      operationResults,
+      state: updatedState,
+    };
+  }
+
+  // Telemetry & Feedback
+  private telemetryEvents: any[] = [];
+  private userFeedback: any[] = [];
+
+  public recordTelemetryEvent(event: { id: string; userId?: string; type: string; route?: string; category?: string; status?: string; statusCode?: number; durationMs?: number; metadata?: any; timestamp: string }): void {
+    this.telemetryEvents.push(event);
+    if (this.telemetryEvents.length > 5000) {
+      this.telemetryEvents.shift();
+    }
+  }
+
+  public recordUserFeedback(feedback: { id: string; userId: string; rating: number; type: string; category?: string; comment?: string; sentiment?: string; timestamp: string }): void {
+    this.userFeedback.push(feedback);
+    if (this.userFeedback.length > 1000) {
+      this.userFeedback.shift();
+    }
+  }
+
+  public getDurableFeedback(limit = 100): any[] {
+    return [...this.userFeedback].reverse().slice(0, limit);
+  }
+
+  // Paper Trading
+  private paperOrders: PaperOrderRecord[] = [];
+  private paperPositions: PaperPositionRecord[] = [];
+
+  public createPaperOrder(userId: string, order: Omit<PaperOrderRecord, 'id' | 'userId' | 'createdAt' | 'updatedAt'>): PaperOrderRecord {
+    const now = new Date().toISOString();
+    const newOrder: PaperOrderRecord = {
+      id: `ord_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      userId,
+      symbol: order.symbol,
+      side: order.side,
+      type: order.type,
+      quantity: order.quantity,
+      price: order.price || (order.side === 'BUY' ? 100 : 100),
+      status: 'FILLED',
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.paperOrders.unshift(newOrder);
+
+    // Auto-create position for filled BUY order
+    if (newOrder.status === 'FILLED' && newOrder.side === 'BUY') {
+      const position: PaperPositionRecord = {
+        id: `pos_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        userId,
+        symbol: order.symbol,
+        side: 'LONG',
+        quantity: order.quantity,
+        entryPrice: newOrder.price || 100,
+        currentPrice: newOrder.price || 100,
+        unrealizedPnl: 0,
+        status: 'OPEN',
+        createdAt: now,
+      };
+      this.paperPositions.unshift(position);
+    }
+
+    return newOrder;
+  }
+
+  public cancelPaperOrder(userId: string, orderId: string): { success: boolean; error?: string; order?: PaperOrderRecord } {
+    const order = this.paperOrders.find((o) => o.id === orderId && o.userId === userId);
+    if (!order) return { success: false, error: 'ORDER_NOT_FOUND' };
+    if (order.status !== 'PENDING') return { success: false, error: 'CANNOT_CANCEL_FILLED_ORDER' };
+    order.status = 'CANCELLED';
+    order.updatedAt = new Date().toISOString();
+    return { success: true, order };
+  }
+
+  public closePaperPosition(userId: string, positionId: string, exitPrice?: number): { success: boolean; pnl?: number; error?: string; position?: PaperPositionRecord } {
+    const pos = this.paperPositions.find((p) => p.id === positionId && p.userId === userId);
+    if (!pos) return { success: false, error: 'POSITION_NOT_FOUND' };
+    if (pos.status === 'CLOSED') return { success: false, error: 'ALREADY_CLOSED' };
+    const closePrice = exitPrice || pos.currentPrice;
+    const pnl = pos.side === 'LONG' ? (closePrice - pos.entryPrice) * pos.quantity : (pos.entryPrice - closePrice) * pos.quantity;
+    pos.status = 'CLOSED';
+    pos.currentPrice = closePrice;
+    pos.unrealizedPnl = pnl;
+    pos.closedAt = new Date().toISOString();
+    return { success: true, pnl, position: pos };
+  }
+
+  public getPaperOrders(userId: string): PaperOrderRecord[] {
+    return this.paperOrders.filter((o) => o.userId === userId);
+  }
+
+  public getPaperPositions(userId: string): PaperPositionRecord[] {
+    return this.paperPositions.filter((p) => p.userId === userId);
   }
 
   public isReady(): boolean {

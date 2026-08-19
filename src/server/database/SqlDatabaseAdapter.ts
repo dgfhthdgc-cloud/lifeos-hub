@@ -4,6 +4,10 @@ import initSqlJs, { Database, SqlJsStatic } from 'sql.js';
 import {
   DatabaseAdapter,
   SyncResult,
+  SyncOperation,
+  SyncOperationsResult,
+  PaperOrderRecord,
+  PaperPositionRecord,
   TaskCompletionResult,
   HabitCompletionResult,
   GoalProgressResult,
@@ -93,7 +97,58 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
         password_hash TEXT NOT NULL,
         salt TEXT NOT NULL,
         role TEXT NOT NULL DEFAULT 'user',
+        token_version INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS telemetry_events (
+        id TEXT PRIMARY KEY,
+        user_id TEXT,
+        event_type TEXT NOT NULL,
+        route TEXT,
+        category TEXT,
+        status TEXT,
+        duration_ms REAL,
+        metadata_json TEXT,
+        timestamp TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS user_feedback (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        rating INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        category TEXT,
+        comment TEXT,
+        sentiment TEXT,
+        timestamp TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS paper_orders (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        symbol TEXT NOT NULL,
+        side TEXT NOT NULL,
+        type TEXT NOT NULL,
+        quantity REAL NOT NULL,
+        price REAL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS paper_positions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        symbol TEXT NOT NULL,
+        side TEXT NOT NULL,
+        quantity REAL NOT NULL,
+        entry_price REAL NOT NULL,
+        current_price REAL NOT NULL,
+        unrealized_pnl REAL DEFAULT 0,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        closed_at TEXT
       );
 
       CREATE TABLE IF NOT EXISTS user_profiles (
@@ -305,6 +360,9 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
       if (!userCols.includes('role')) {
         this.db.run("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user';");
       }
+      if (!userCols.includes('token_version')) {
+        this.db.run("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 1;");
+      }
     } catch {
       // Ignored if PRAGMA or ALTER fails
     }
@@ -378,6 +436,7 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
       passwordHash: userRow.password_hash as string,
       salt: userRow.salt as string,
       role: (userRow.role as 'admin' | 'user') || 'user',
+      tokenVersion: typeof userRow.token_version === 'number' ? userRow.token_version : 1,
       createdAt: userRow.created_at as string,
       profile,
     };
@@ -405,6 +464,7 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
       passwordHash: userRow.password_hash as string,
       salt: userRow.salt as string,
       role: (userRow.role as 'admin' | 'user') || 'user',
+      tokenVersion: typeof userRow.token_version === 'number' ? userRow.token_version : 1,
       createdAt: userRow.created_at as string,
       profile,
     };
@@ -412,8 +472,27 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
 
   public setUserRole(userId: string, role: 'admin' | 'user'): void {
     this.ensureInitialized();
-    this.db!.run('UPDATE users SET role = ? WHERE id = ?', [role, userId]);
+    this.db!.run('UPDATE users SET role = ?, token_version = token_version + 1 WHERE id = ?', [role, userId]);
     this.saveToDisk();
+  }
+
+  public invalidateUserSessions(userId: string): void {
+    this.ensureInitialized();
+    this.db!.run('UPDATE users SET token_version = token_version + 1 WHERE id = ?', [userId]);
+    this.saveToDisk();
+  }
+
+  public getUserTokenVersion(userId: string): number {
+    this.ensureInitialized();
+    const stmt = this.db!.prepare('SELECT token_version FROM users WHERE id = :id');
+    stmt.bind({ ':id': userId });
+    if (stmt.step()) {
+      const row = stmt.getAsObject();
+      stmt.free();
+      return typeof row.token_version === 'number' ? row.token_version : 1;
+    }
+    stmt.free();
+    return 1;
   }
 
   public createUser(email: string, passwordHash: string, salt: string, name: string, role?: 'admin' | 'user'): AuthUserRecord {
@@ -439,7 +518,7 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
     this.db!.run('BEGIN TRANSACTION;');
     try {
       this.db!.run(
-        'INSERT INTO users (id, email, password_hash, salt, role, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        'INSERT INTO users (id, email, password_hash, salt, role, token_version, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)',
         [id, normalized, passwordHash, salt, userRole, now]
       );
 
@@ -536,6 +615,7 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
       passwordHash,
       salt,
       role: userRole,
+      tokenVersion: 1,
       createdAt: now,
       profile,
     };
@@ -959,11 +1039,180 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
     };
   }
 
+  public applySyncOperations(
+    userId: string,
+    operations: SyncOperation[],
+    baseVersion?: number
+  ): SyncOperationsResult {
+    this.ensureInitialized();
+    const currentState = this.getUserState(userId);
+    const clientBaseVersion = typeof baseVersion === 'number' ? baseVersion : undefined;
+
+    if (clientBaseVersion !== undefined && clientBaseVersion < currentState.version && operations.length > 0) {
+      // Check if all operations are already cached (idempotency check)
+      const allCached = operations.every((op) => {
+        const eventId = op.clientEventId || op.operationId;
+        return eventId ? this.getCachedEvent(userId, eventId) !== null : false;
+      });
+
+      if (!allCached) {
+        return {
+          success: false,
+          conflict: true,
+          serverVersion: currentState.version,
+          clientVersion: clientBaseVersion,
+          appliedCount: 0,
+          rejectedCount: operations.length,
+          operationResults: operations.map((op) => ({
+            operationId: op.operationId,
+            success: false,
+            error: 'STALE_BASE_VERSION_CONFLICT',
+          })),
+          state: currentState,
+        };
+      }
+    }
+
+    const operationResults: Array<{
+      operationId: string;
+      success: boolean;
+      error?: string;
+      result?: any;
+    }> = [];
+    let appliedCount = 0;
+    let rejectedCount = 0;
+
+    this.db!.run('BEGIN TRANSACTION;');
+    try {
+      for (const op of operations) {
+        const eventId = op.clientEventId || op.operationId;
+        const cached = eventId ? this.getCachedEvent(userId, eventId) : null;
+        if (cached) {
+          operationResults.push({
+            operationId: op.operationId,
+            success: true,
+            result: cached,
+          });
+          appliedCount++;
+          continue;
+        }
+
+        try {
+          let opResult: any = null;
+          switch (op.type) {
+            case 'CREATE_TASK': {
+              const taskPayload = op.payload?.task || op.payload || {};
+              opResult = this.createTask(userId, taskPayload, op.clientEventId, op.baseVersion);
+              break;
+            }
+            case 'UPDATE_TASK': {
+              const taskId = op.entityId || op.payload?.taskId || op.payload?.id;
+              const updates = op.payload?.updates || op.payload || {};
+              opResult = this.updateTask(userId, taskId, updates, op.clientEventId, op.baseVersion);
+              break;
+            }
+            case 'DELETE_TASK': {
+              const taskId = op.entityId || op.payload?.taskId || op.payload?.id;
+              opResult = this.deleteTask(userId, taskId, op.clientEventId, op.baseVersion);
+              break;
+            }
+            case 'COMPLETE_TASK': {
+              const taskId = op.entityId || op.payload?.taskId || op.payload?.id;
+              opResult = this.completeTask(userId, taskId, op.clientEventId, op.baseVersion);
+              break;
+            }
+            case 'CREATE_HABIT': {
+              const habitPayload = op.payload?.habit || op.payload || {};
+              opResult = this.createHabit(userId, habitPayload, op.clientEventId, op.baseVersion);
+              break;
+            }
+            case 'UPDATE_HABIT': {
+              const habitId = op.entityId || op.payload?.habitId || op.payload?.id;
+              const updates = op.payload?.updates || op.payload || {};
+              opResult = this.updateHabit(userId, habitId, updates, op.clientEventId, op.baseVersion);
+              break;
+            }
+            case 'DELETE_HABIT': {
+              const habitId = op.entityId || op.payload?.habitId || op.payload?.id;
+              opResult = this.deleteHabit(userId, habitId, op.clientEventId, op.baseVersion);
+              break;
+            }
+            case 'COMPLETE_HABIT': {
+              const habitId = op.entityId || op.payload?.habitId || op.payload?.id;
+              const dateStr = op.payload?.date || op.payload?.dateStr;
+              opResult = this.completeHabit(userId, habitId, dateStr, op.clientEventId, op.baseVersion);
+              break;
+            }
+            case 'UPDATE_GOAL_PROGRESS': {
+              const goalId = op.entityId || op.payload?.goalId || op.payload?.id;
+              const progress = typeof op.payload?.progress === 'number' ? op.payload.progress : 0;
+              const milestoneId = op.payload?.milestoneId;
+              opResult = this.updateGoalProgress(userId, goalId, progress, milestoneId, op.clientEventId, op.baseVersion);
+              break;
+            }
+            case 'UPDATE_PROFILE_SETTINGS': {
+              const updates = op.payload || {};
+              opResult = this.updateUserProfile(userId, updates);
+              break;
+            }
+            default:
+              throw new Error(`UNSUPPORTED_OPERATION_TYPE: ${op.type}`);
+          }
+
+          if (eventId) {
+            this.cacheEvent(userId, eventId, opResult);
+          }
+          operationResults.push({
+            operationId: op.operationId,
+            success: true,
+            result: opResult,
+          });
+          appliedCount++;
+        } catch (opErr: any) {
+          operationResults.push({
+            operationId: op.operationId,
+            success: false,
+            error: opErr?.message || 'Operation failed',
+          });
+          rejectedCount++;
+        }
+      }
+
+      this.db!.run('COMMIT;');
+      this.saveToDisk();
+
+      const finalState = this.getUserState(userId);
+      return {
+        success: rejectedCount === 0,
+        conflict: false,
+        serverVersion: finalState.version,
+        clientVersion: baseVersion,
+        appliedCount,
+        rejectedCount,
+        operationResults,
+        state: finalState,
+      };
+    } catch (txErr) {
+      this.db!.run('ROLLBACK;');
+      throw txErr;
+    }
+  }
+
   public syncUserState(
     userId: string,
-    syncPayload: { baseVersion?: number; changes?: Partial<UserDatabaseState> }
+    syncPayload: { baseVersion?: number; changes?: Partial<UserDatabaseState>; operations?: SyncOperation[] }
   ): SyncResult {
     this.ensureInitialized();
+    if (syncPayload?.operations && Array.isArray(syncPayload.operations)) {
+      const opResult = this.applySyncOperations(userId, syncPayload.operations, syncPayload.baseVersion);
+      return {
+        conflict: opResult.conflict,
+        serverVersion: opResult.serverVersion,
+        clientVersion: opResult.clientVersion,
+        state: opResult.state,
+      };
+    }
+
     const currentState = this.getUserState(userId);
     const clientBaseVersion = typeof syncPayload?.baseVersion === 'number' ? syncPayload.baseVersion : undefined;
 
@@ -992,129 +1241,6 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
           `UPDATE user_profiles SET name = ?, title = ?, avatar_url = ?, settings_json = ? WHERE user_id = ?`,
           [name, title, avatarUrl || null, JSON.stringify(settings || {}), userId]
         );
-      }
-
-      if (Array.isArray(payload.tasks)) {
-        this.db!.run('DELETE FROM tasks WHERE user_id = ?', [userId]);
-        for (const t of payload.tasks) {
-          this.db!.run(
-            `INSERT INTO tasks (
-              id, user_id, title, description, due_date, time, end_time,
-              priority, status, category, tags_json, goal_id, milestone_id, xp, completed, completed_at, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              String(t?.id || `task-${Date.now()}`),
-              userId,
-              String(t?.title || 'Untitled Task').slice(0, 150),
-              String(t?.description || '').slice(0, 500),
-              String(t?.dueDate || '').slice(0, 20),
-              String(t?.time || '').slice(0, 20),
-              String(t?.endTime || '').slice(0, 20),
-              t?.priority === 'high' || t?.priority === 'low' ? t.priority : 'medium',
-              t?.status === 'completed' ? 'completed' : t?.status === 'in_progress' ? 'in_progress' : 'todo',
-              String(t?.category || 'Engineering').slice(0, 50),
-              JSON.stringify(Array.isArray(t?.tags) ? t.tags.map((tg: any) => String(tg).slice(0, 30)) : []),
-              t?.goalId ? String(t.goalId).slice(0, 100) : null,
-              t?.milestoneId ? String(t.milestoneId).slice(0, 100) : null,
-              typeof t?.xp === 'number' ? Math.max(10, Math.min(300, t.xp)) : 50,
-              t?.completed ? 1 : 0,
-              t?.completedAt ? String(t.completedAt).slice(0, 30) : null,
-              String(t?.createdAt || new Date().toISOString()),
-            ]
-          );
-        }
-      }
-
-      if (Array.isArray(payload.habits)) {
-        this.db!.run('DELETE FROM habits WHERE user_id = ?', [userId]);
-        for (const h of payload.habits) {
-          this.db!.run(
-            `INSERT INTO habits (
-              id, user_id, name, description, frequency, target, category,
-              difficulty, xp, current_streak, best_streak, history_json, completed_today, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              String(h?.id || `habit-${Date.now()}`),
-              userId,
-              String(h?.name || 'Untitled Habit').slice(0, 100),
-              String(h?.description || '').slice(0, 300),
-              h?.frequency || 'daily',
-              String(h?.target || '').slice(0, 50),
-              h?.category || 'Skill',
-              h?.difficulty === 'hard' || h?.difficulty === 'easy' ? h.difficulty : 'medium',
-              typeof h?.xp === 'number' ? Math.max(10, Math.min(200, h.xp)) : 30,
-              typeof h?.currentStreak === 'number' ? Math.max(0, h.currentStreak) : 0,
-              typeof h?.bestStreak === 'number' ? Math.max(0, h.bestStreak) : 0,
-              JSON.stringify(Array.isArray(h?.history) ? h.history.map((d: any) => String(d).slice(0, 15)) : []),
-              h?.completedToday ? 1 : 0,
-              String(h?.createdAt || new Date().toISOString()),
-            ]
-          );
-        }
-      }
-
-      if (Array.isArray(payload.goals)) {
-        this.db!.run('DELETE FROM goals WHERE user_id = ?', [userId]);
-        for (const g of payload.goals) {
-          const milestones = Array.isArray(g?.milestones)
-            ? g.milestones.map((m: any) => ({
-                id: String(m?.id || `m-${Date.now()}`),
-                goalId: String(g?.id || ''),
-                title: String(m?.title || 'Milestone').slice(0, 150),
-                completed: Boolean(m?.completed),
-                order: typeof m?.order === 'number' ? m.order : 1,
-                xpReward: typeof m?.xpReward === 'number' ? Math.max(10, Math.min(500, m.xpReward)) : 100,
-              }))
-            : [];
-
-          this.db!.run(
-            `INSERT INTO goals (
-              id, user_id, title, description, category, progress, xp_reward, milestones_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              String(g?.id || `goal-${Date.now()}`),
-              userId,
-              String(g?.title || 'Untitled Goal').slice(0, 150),
-              String(g?.description || '').slice(0, 500),
-              String(g?.category || 'Career & Skills').slice(0, 50),
-              typeof g?.progress === 'number' ? Math.max(0, Math.min(100, g.progress)) : 0,
-              typeof g?.xpReward === 'number' ? Math.max(50, Math.min(2000, g.xpReward)) : 500,
-              JSON.stringify(milestones),
-              String(g?.createdAt || new Date().toISOString()),
-            ]
-          );
-        }
-      }
-
-      if (Array.isArray(payload.journal)) {
-        this.db!.run('DELETE FROM journal_entries WHERE user_id = ?', [userId]);
-        for (const j of payload.journal.slice(0, 100)) {
-          this.db!.run(
-            `INSERT INTO journal_entries (
-              id, user_id, timestamp, symbol, direction, entry_price, exit_price,
-              size, pnl, pnl_percent, r_multiple, status, notes, setup_strategy, session, emotion, mistakes_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              String(j?.id || `tr-${Date.now()}`),
-              userId,
-              String(j?.timestamp || new Date().toISOString()),
-              String(j?.symbol || 'N/A').slice(0, 15),
-              j?.direction === 'short' ? 'short' : 'long',
-              typeof j?.entryPrice === 'number' ? j.entryPrice : 0,
-              typeof j?.exitPrice === 'number' ? j.exitPrice : 0,
-              typeof j?.size === 'number' ? j.size : 1,
-              typeof j?.pnl === 'number' ? j.pnl : 0,
-              typeof j?.pnlPercent === 'number' ? j.pnlPercent : 0,
-              typeof j?.rMultiple === 'number' ? j.rMultiple : 0,
-              j?.status === 'win' ? 'win' : j?.status === 'loss' ? 'loss' : 'breakeven',
-              String(j?.notes || '').slice(0, 500),
-              String(j?.setupStrategy || '').slice(0, 50),
-              String(j?.session || 'New York AM').slice(0, 30),
-              String(j?.emotion || 'Disciplined').slice(0, 30),
-              JSON.stringify(Array.isArray(j?.mistakes) ? j.mistakes.map((m: any) => String(m).slice(0, 50)) : []),
-            ]
-          );
-        }
       }
 
       const newVersion = currentState.version + 1;
@@ -2020,12 +2146,322 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
   public updateUserPassword(userId: string, passwordHash: string, salt: string): boolean {
     this.ensureInitialized();
     try {
-      this.db!.run('UPDATE users SET password_hash = ?, salt = ? WHERE id = ?', [passwordHash, salt, userId]);
+      this.db!.run('UPDATE users SET password_hash = ?, salt = ?, token_version = token_version + 1 WHERE id = ?', [passwordHash, salt, userId]);
       this.saveToDisk();
       return true;
     } catch {
       return false;
     }
+  }
+
+  // Durable Telemetry & Feedback
+  public recordTelemetryEvent(event: {
+    id: string;
+    userId?: string;
+    type: string;
+    route?: string;
+    category?: string;
+    status?: string;
+    statusCode?: number;
+    durationMs?: number;
+    metadata?: any;
+    timestamp: string;
+  }): void {
+    this.ensureInitialized();
+    try {
+      this.db!.run(
+        `INSERT OR REPLACE INTO telemetry_events (id, user_id, event_type, route, category, status, duration_ms, metadata_json, timestamp)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          event.id,
+          event.userId || null,
+          event.type,
+          event.route || null,
+          event.category || null,
+          event.status || null,
+          typeof event.durationMs === 'number' ? event.durationMs : null,
+          event.metadata ? JSON.stringify(event.metadata) : null,
+          event.timestamp,
+        ]
+      );
+      this.saveToDisk();
+    } catch (err) {
+      console.warn('Failed to record durable telemetry event:', err);
+    }
+  }
+
+  public recordUserFeedback(feedback: {
+    id: string;
+    userId: string;
+    rating: number;
+    type: string;
+    category?: string;
+    comment?: string;
+    sentiment?: string;
+    timestamp: string;
+  }): void {
+    this.ensureInitialized();
+    try {
+      this.db!.run(
+        `INSERT OR REPLACE INTO user_feedback (id, user_id, rating, type, category, comment, sentiment, timestamp)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          feedback.id,
+          feedback.userId,
+          feedback.rating,
+          feedback.type,
+          feedback.category || 'General',
+          feedback.comment || '',
+          feedback.sentiment || 'neutral',
+          feedback.timestamp,
+        ]
+      );
+      this.saveToDisk();
+    } catch (err) {
+      console.warn('Failed to record user feedback:', err);
+    }
+  }
+
+  public getDurableFeedback(limit = 100): any[] {
+    this.ensureInitialized();
+    try {
+      const stmt = this.db!.prepare('SELECT * FROM user_feedback ORDER BY timestamp DESC LIMIT :lim');
+      stmt.bind({ ':lim': Math.min(500, Math.max(1, limit)) });
+      const rows: any[] = [];
+      while (stmt.step()) {
+        const row = stmt.getAsObject();
+        rows.push({
+          id: row.id,
+          userId: row.user_id,
+          rating: Number(row.rating),
+          type: row.type,
+          category: row.category,
+          comment: row.comment,
+          sentiment: row.sentiment,
+          timestamp: row.timestamp,
+        });
+      }
+      stmt.free();
+      return rows;
+    } catch {
+      return [];
+    }
+  }
+
+  // Paper Trading State
+  public createPaperOrder(
+    userId: string,
+    order: Omit<PaperOrderRecord, 'id' | 'userId' | 'createdAt' | 'updatedAt'>
+  ): PaperOrderRecord {
+    this.ensureInitialized();
+    const id = `order_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const now = new Date().toISOString();
+    const record: PaperOrderRecord = {
+      id,
+      userId,
+      symbol: order.symbol.toUpperCase(),
+      side: order.side,
+      type: order.type,
+      quantity: Math.max(0.0001, Number(order.quantity)),
+      price: order.price ? Number(order.price) : undefined,
+      status: order.status || 'PENDING',
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    this.db!.run(
+      `INSERT INTO paper_orders (id, user_id, symbol, side, type, quantity, price, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        record.id,
+        record.userId,
+        record.symbol,
+        record.side,
+        record.type,
+        record.quantity,
+        record.price ?? null,
+        record.status,
+        record.createdAt,
+        record.updatedAt,
+      ]
+    );
+
+    // If market order, also automatically record position
+    if (order.type === 'MARKET' || order.status === 'FILLED') {
+      const posId = `pos_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const entryPrice = record.price || 100;
+      this.db!.run(
+        `INSERT INTO paper_positions (id, user_id, symbol, side, quantity, entry_price, current_price, unrealized_pnl, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          posId,
+          userId,
+          record.symbol,
+          record.side === 'BUY' ? 'LONG' : 'SHORT',
+          record.quantity,
+          entryPrice,
+          entryPrice,
+          0,
+          'OPEN',
+          now,
+        ]
+      );
+    }
+
+    this.saveToDisk();
+    return record;
+  }
+
+  public cancelPaperOrder(userId: string, orderId: string): { success: boolean; error?: string; order?: PaperOrderRecord } {
+    this.ensureInitialized();
+    const stmt = this.db!.prepare('SELECT * FROM paper_orders WHERE id = :id AND user_id = :uid');
+    stmt.bind({ ':id': orderId, ':uid': userId });
+    if (!stmt.step()) {
+      stmt.free();
+      return { success: false, error: 'ORDER_NOT_FOUND' };
+    }
+    const row = stmt.getAsObject();
+    stmt.free();
+
+    if (row.status !== 'PENDING') {
+      return { success: false, error: 'ORDER_NOT_CANCELLABLE' };
+    }
+
+    const now = new Date().toISOString();
+    this.db!.run('UPDATE paper_orders SET status = ?, updated_at = ? WHERE id = ? AND user_id = ?', [
+      'CANCELLED',
+      now,
+      orderId,
+      userId,
+    ]);
+    this.saveToDisk();
+
+    return {
+      success: true,
+      order: {
+        id: row.id as string,
+        userId: row.user_id as string,
+        symbol: row.symbol as string,
+        side: row.side as any,
+        type: row.type as any,
+        quantity: Number(row.quantity),
+        price: row.price ? Number(row.price) : undefined,
+        status: 'CANCELLED',
+        createdAt: row.created_at as string,
+        updatedAt: now,
+      },
+    };
+  }
+
+  public closePaperPosition(
+    userId: string,
+    positionId: string,
+    exitPrice?: number
+  ): { success: boolean; pnl?: number; error?: string; position?: PaperPositionRecord } {
+    this.ensureInitialized();
+    const stmt = this.db!.prepare('SELECT * FROM paper_positions WHERE id = :id AND user_id = :uid');
+    stmt.bind({ ':id': positionId, ':uid': userId });
+    if (!stmt.step()) {
+      stmt.free();
+      return { success: false, error: 'POSITION_NOT_FOUND' };
+    }
+    const row = stmt.getAsObject();
+    stmt.free();
+
+    if (row.status === 'CLOSED') {
+      return { success: false, error: 'POSITION_ALREADY_CLOSED' };
+    }
+
+    const entryPrice = Number(row.entry_price);
+    const quantity = Number(row.quantity);
+    const actualExitPrice = exitPrice ? Number(exitPrice) : entryPrice;
+    const isLong = row.side === 'LONG';
+    const pnl = isLong ? (actualExitPrice - entryPrice) * quantity : (entryPrice - actualExitPrice) * quantity;
+    const now = new Date().toISOString();
+
+    this.db!.run(
+      'UPDATE paper_positions SET status = ?, current_price = ?, unrealized_pnl = ?, closed_at = ? WHERE id = ? AND user_id = ?',
+      ['CLOSED', actualExitPrice, pnl, now, positionId, userId]
+    );
+    this.saveToDisk();
+
+    return {
+      success: true,
+      pnl,
+      position: {
+        id: row.id as string,
+        userId: row.user_id as string,
+        symbol: row.symbol as string,
+        side: row.side as any,
+        quantity,
+        entryPrice,
+        currentPrice: actualExitPrice,
+        unrealizedPnl: pnl,
+        status: 'CLOSED',
+        createdAt: row.created_at as string,
+        closedAt: now,
+      },
+    };
+  }
+
+  public getPaperOrders(userId: string): PaperOrderRecord[] {
+    this.ensureInitialized();
+    const stmt = this.db!.prepare('SELECT * FROM paper_orders WHERE user_id = :uid ORDER BY created_at DESC LIMIT 100');
+    stmt.bind({ ':uid': userId });
+    const orders: PaperOrderRecord[] = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      orders.push({
+        id: row.id as string,
+        userId: row.user_id as string,
+        symbol: row.symbol as string,
+        side: row.side as any,
+        type: row.type as any,
+        quantity: Number(row.quantity),
+        price: row.price ? Number(row.price) : undefined,
+        status: row.status as any,
+        createdAt: row.created_at as string,
+        updatedAt: row.updated_at as string,
+      });
+    }
+    stmt.free();
+    return orders;
+  }
+
+  public getPaperPositions(userId: string): PaperPositionRecord[] {
+    this.ensureInitialized();
+    const stmt = this.db!.prepare('SELECT * FROM paper_positions WHERE user_id = :uid ORDER BY created_at DESC LIMIT 100');
+    stmt.bind({ ':uid': userId });
+    const positions: PaperPositionRecord[] = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      positions.push({
+        id: row.id as string,
+        userId: row.user_id as string,
+        symbol: row.symbol as string,
+        side: row.side as any,
+        quantity: Number(row.quantity),
+        entryPrice: Number(row.entry_price),
+        currentPrice: Number(row.current_price),
+        unrealizedPnl: Number(row.unrealized_pnl),
+        status: row.status as any,
+        createdAt: row.created_at as string,
+        closedAt: row.closed_at ? (row.closed_at as string) : undefined,
+      });
+    }
+    stmt.free();
+    return positions;
+  }
+
+  public async reopen(): Promise<void> {
+    if (this.db) {
+      try {
+        this.db.close();
+      } catch {}
+      this.db = null;
+    }
+    this.isInitialized = false;
+    await this.initialize();
   }
 
   public isReady(): boolean {
