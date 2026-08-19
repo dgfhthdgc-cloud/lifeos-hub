@@ -120,7 +120,9 @@ async function runPhase3Tests() {
 
   // Cleanup test database
   if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
-  if (fs.existsSync(testDbDir)) fs.rmdirSync(testDbDir);
+  try {
+    if (fs.existsSync(testDbDir)) fs.rmSync(testDbDir, { recursive: true, force: true });
+  } catch {}
 
   // DOMAIN 5: PAPER TRADING SAFETY ENFORCEMENT
   console.log('\nTEST GROUP 5: Trading Safety & Live Execution Rejection');

@@ -10,6 +10,7 @@ export interface UserProfile {
   currentXp: number;
   nextLevelXp: number;
   streakDays: number;
+  tasksCompleted?: number;
   createdAt: string;
   settings: {
     theme: ThemeMode;

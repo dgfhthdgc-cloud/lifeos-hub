@@ -1510,14 +1510,14 @@ export const Storage = {
     quests[idx] = quest;
     this.setQuests(quests);
 
-    // Log XP transaction
-    this.addXpTransaction({
-      amount: quest.xpReward,
-      reason: `Claimed Quest: ${quest.title}`,
-      category: 'quest',
-    });
+    // Atomically calculate level progression and log ledger transaction
+    const { xpAwarded } = this.awardProgressionXp(
+      quest.xpReward,
+      `Claimed Quest: ${quest.title}`,
+      'quest'
+    );
 
-    return { quest, xpAwarded: quest.xpReward };
+    return { quest, xpAwarded };
   },
 
   updateQuestProgress(targetType: QuestItem['targetType'], incrementBy = 1): QuestItem[] {
@@ -1573,13 +1573,13 @@ export const Storage = {
     badges[idx] = badge;
     this.setBadges(badges);
 
-    this.addXpTransaction({
-      amount: badge.xpReward,
-      reason: `Unlocked Badge: ${badge.title}`,
-      category: 'badge',
-    });
+    const { xpAwarded } = this.awardProgressionXp(
+      badge.xpReward,
+      `Unlocked Badge: ${badge.title}`,
+      'badge'
+    );
 
-    return { badge, xpAwarded: badge.xpReward };
+    return { badge, xpAwarded };
   },
 
   getStreakData(): StreakSystemData {
@@ -1672,15 +1672,16 @@ export const Storage = {
     try {
       const unlockedPerks = this.getSkillPerks().filter((p) => p.unlocked);
       for (const perk of unlockedPerks) {
-        if (perk.bonusMultiplier) {
+        if (typeof perk.bonusMultiplier === 'number') {
+          const bonus = perk.bonusMultiplier >= 1.0 ? perk.bonusMultiplier - 1.0 : perk.bonusMultiplier;
           if (perk.domain === 'execution' && (category === 'task' || category === 'goal')) {
-            multiplier += perk.bonusMultiplier;
+            multiplier += bonus;
           } else if (perk.domain === 'consistency' && category === 'habit') {
-            multiplier += perk.bonusMultiplier;
+            multiplier += bonus;
           } else if (perk.domain === 'knowledge' && category === 'learning') {
-            multiplier += perk.bonusMultiplier;
+            multiplier += bonus;
           } else if (perk.domain === 'strategy' && (category === 'trading' || category === 'boss')) {
-            multiplier += perk.bonusMultiplier;
+            multiplier += bonus;
           }
         }
       }

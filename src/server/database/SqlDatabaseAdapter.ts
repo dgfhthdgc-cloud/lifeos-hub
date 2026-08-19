@@ -544,6 +544,7 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
       nextLevelXp: Number(row.next_level_xp),
       avatarUrl: (row.avatar_url as string) || undefined,
       streakDays: Number(row.streak_count),
+      tasksCompleted: Number(row.tasks_completed || 0),
       settings: settings as any,
       createdAt: row.created_at as string,
     };
@@ -1179,6 +1180,10 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
         'UPDATE user_profiles SET tasks_completed = tasks_completed + 1 WHERE user_id = ?',
         [userId]
       );
+
+      if (xpResult.profile) {
+        xpResult.profile.tasksCompleted = (xpResult.profile.tasksCompleted || 0) + 1;
+      }
 
       const newVersion = xpResult.version;
       const updatedTask: TaskItem = {
