@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { NextBestAction, RoutePath } from '../../types';
+import { clientTelemetry } from '../../lib/telemetry';
 import {
   Sparkles,
   Zap,
@@ -160,6 +161,7 @@ export function NextBestActionWidget({
           <div className="flex flex-wrap items-center gap-3 pt-2">
             <button
               onClick={() => {
+                clientTelemetry.recordNBAInteraction(currentAction.id, currentAction.type, 'clicked');
                 if (onExecutePrimary) {
                   onExecutePrimary(currentAction);
                 } else {

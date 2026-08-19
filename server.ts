@@ -15,6 +15,8 @@ import {
 import { generateAICoachResponse } from './src/server/aiCoach';
 import { validateEnvironment, getConfig } from './src/server/config';
 import { logger } from './src/server/logger';
+import { serverTelemetry } from './src/server/telemetry';
+import { backupManager } from './src/server/backup';
 
 // Extend Express Request with authenticated user
 declare global {
@@ -110,9 +112,24 @@ async function startServer() {
 
   // Correlation ID & Request Context Middleware
   app.use((req, res, next) => {
+    const startMs = Date.now();
     const correlationId = (req.headers['x-request-id'] as string) || `req_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     req.requestId = correlationId;
     res.setHeader('X-Request-Id', correlationId);
+
+    // Record response telemetry on finish
+    res.on('finish', () => {
+      const durationMs = Date.now() - startMs;
+      serverTelemetry.recordEvent({
+        type: 'api_request',
+        userId: req.user?.userId,
+        durationMs,
+        statusCode: res.statusCode,
+        route: req.baseUrl ? `${req.baseUrl}${req.path}` : req.path,
+        status: res.statusCode < 400 ? 'success' : res.statusCode === 429 ? 'rate_limited' : res.statusCode === 409 ? 'conflict' : 'failure',
+      });
+    });
+
     next();
   });
 
@@ -201,6 +218,7 @@ async function startServer() {
       const userRecord = await db.createUser(email, hash, salt, typeof name === 'string' ? name : '');
       const token = generateAuthToken({ userId: userRecord.id, email: userRecord.email });
 
+      serverTelemetry.recordFunnelStep(userRecord.id, 'signup');
       logger.info('AUTH', `New user registered: ${userRecord.email}`, { userId: userRecord.id });
 
       res.json({
@@ -405,6 +423,7 @@ async function startServer() {
       if (!result.success) {
         return res.status(404).json({ error: result.error || 'TASK_NOT_FOUND', message: 'Task not found.' });
       }
+      serverTelemetry.recordFunnelStep(req.user!.userId, 'task_completed');
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: 'TASK_COMPLETE_FAILED', message: err?.message });
@@ -423,6 +442,9 @@ async function startServer() {
       const baseVersion = typeof req.body.baseVersion === 'number' ? req.body.baseVersion : undefined;
       const taskData = req.body.task || req.body;
       const result = await db.createTask(req.user!.userId, taskData, clientEventId, baseVersion);
+      if (result.success) {
+        serverTelemetry.recordFunnelStep(req.user!.userId, 'task_created');
+      }
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: 'TASK_CREATE_FAILED', message: err?.message });
@@ -491,6 +513,7 @@ async function startServer() {
       if (!result.success) {
         return res.status(404).json({ error: result.error || 'HABIT_NOT_FOUND', message: 'Habit not found.' });
       }
+      serverTelemetry.recordFunnelStep(req.user!.userId, 'habit_completed');
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: 'HABIT_COMPLETE_FAILED', message: err?.message });
@@ -509,6 +532,9 @@ async function startServer() {
       const baseVersion = typeof req.body.baseVersion === 'number' ? req.body.baseVersion : undefined;
       const habitData = req.body.habit || req.body;
       const result = await db.createHabit(req.user!.userId, habitData, clientEventId, baseVersion);
+      if (result.success) {
+        serverTelemetry.recordFunnelStep(req.user!.userId, 'habit_created');
+      }
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: 'HABIT_CREATE_FAILED', message: err?.message });
@@ -582,6 +608,9 @@ async function startServer() {
       );
       if (!result.success) {
         return res.status(404).json({ error: result.error || 'GOAL_NOT_FOUND', message: 'Goal not found.' });
+      }
+      if (progress >= 100) {
+        serverTelemetry.recordFunnelStep(req.user!.userId, 'goal_completed');
       }
       res.json(result);
     } catch (err: any) {
@@ -841,6 +870,145 @@ ${sanitizedQuestion}
 
   app.post('/api/broker/positions/close/:id', requireAuth, (_req, res) => {
     res.json({ success: true, pnl: 0 });
+  });
+
+  // -------------------------------------------------------------
+  // PHASE 8 TELEMETRY & OBSERVABILITY API
+  // -------------------------------------------------------------
+
+  app.get('/api/telemetry/metrics', requireAuth, (_req, res) => {
+    try {
+      const metrics = serverTelemetry.getMetrics();
+      res.json({
+        success: true,
+        metrics,
+        timestamp: Date.now(),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: 'TELEMETRY_FETCH_FAILED', message: err?.message });
+    }
+  });
+
+  app.post('/api/telemetry/events', (req, res) => {
+    try {
+      const { events } = req.body;
+      if (Array.isArray(events)) {
+        for (const evt of events) {
+          if (evt && typeof evt === 'object') {
+            serverTelemetry.recordEvent({
+              type: evt.type || 'api_request',
+              userId: req.user?.userId || evt.userId,
+              category: evt.category,
+              durationMs: evt.durationMs,
+              statusCode: evt.statusCode,
+              route: evt.route,
+              status: evt.status,
+              metadata: evt.metadata,
+            });
+          }
+        }
+      }
+      res.json({ success: true, received: Array.isArray(events) ? events.length : 0 });
+    } catch {
+      res.status(400).json({ error: 'TELEMETRY_INGESTION_FAILED' });
+    }
+  });
+
+  app.post('/api/telemetry/feedback', requireAuth, (req, res) => {
+    try {
+      const { rating, type, category, comment } = req.body;
+      if (typeof rating !== 'number' || rating < 1 || rating > 5) {
+        return res.status(400).json({ error: 'INVALID_RATING', message: 'Rating must be an integer between 1 and 5.' });
+      }
+
+      const feedback = serverTelemetry.recordFeedback({
+        userId: req.user!.userId,
+        rating: Math.round(rating),
+        type: type || 'csat',
+        category: typeof category === 'string' ? category.slice(0, 50) : undefined,
+        comment: typeof comment === 'string' ? comment.slice(0, 1000) : undefined,
+        sentiment: rating >= 4 ? 'positive' : rating <= 2 ? 'negative' : 'neutral',
+      });
+
+      logger.info('SYSTEM', `User feedback recorded: ${feedback.rating}★ (${feedback.type})`, {
+        userId: req.user!.userId,
+        rating: feedback.rating,
+      });
+
+      res.json({ success: true, feedback });
+    } catch (err: any) {
+      res.status(500).json({ error: 'FEEDBACK_SUBMISSION_FAILED', message: err?.message });
+    }
+  });
+
+  app.get('/api/telemetry/feedback', requireAuth, (_req, res) => {
+    try {
+      const feedback = serverTelemetry.getFeedback();
+      res.json({ success: true, count: feedback.length, feedback });
+    } catch (err: any) {
+      res.status(500).json({ error: 'FEEDBACK_FETCH_FAILED', message: err?.message });
+    }
+  });
+
+  // -------------------------------------------------------------
+  // DISASTER RECOVERY, BACKUP & RESTORE API
+  // -------------------------------------------------------------
+
+  app.post('/api/admin/backup/create', requireAuth, async (_req, res) => {
+    try {
+      const metadata = await backupManager.createBackup();
+      logger.info('DATABASE', `Point-in-time backup snapshot created: ${metadata.filename}`, {
+        sizeBytes: metadata.sizeBytes,
+        checksum: metadata.checksum,
+        userCount: metadata.userCount,
+      });
+      res.json({ success: true, backup: metadata });
+    } catch (err: any) {
+      logger.error('DATABASE', 'Backup snapshot creation failed', { error: err?.message });
+      res.status(500).json({ error: 'BACKUP_FAILED', message: err?.message });
+    }
+  });
+
+  app.get('/api/admin/backup/list', requireAuth, (_req, res) => {
+    try {
+      const backups = backupManager.listBackups();
+      res.json({ success: true, count: backups.length, backups });
+    } catch (err: any) {
+      res.status(500).json({ error: 'BACKUP_LIST_FAILED', message: err?.message });
+    }
+  });
+
+  app.post('/api/admin/backup/verify', requireAuth, async (req, res) => {
+    try {
+      const { filepath, expectedChecksum } = req.body;
+      if (!filepath || typeof filepath !== 'string') {
+        return res.status(400).json({ error: 'INVALID_PATH', message: 'Backup filepath is required.' });
+      }
+
+      const result = await backupManager.verifyBackupFile(filepath, expectedChecksum);
+      res.json({ success: true, verification: result });
+    } catch (err: any) {
+      res.status(500).json({ error: 'BACKUP_VERIFY_FAILED', message: err?.message });
+    }
+  });
+
+  app.post('/api/admin/backup/restore', requireAuth, async (req, res) => {
+    try {
+      const { filepath } = req.body;
+      if (!filepath || typeof filepath !== 'string') {
+        return res.status(400).json({ error: 'INVALID_PATH', message: 'Backup filepath is required.' });
+      }
+
+      const result = await backupManager.restoreFromBackup(filepath);
+      logger.warn('DATABASE', `Database restored from backup: ${filepath}`, {
+        restoredTables: result.restoredTables,
+        userCount: result.userCount,
+      });
+      res.json({ success: true, restore: result });
+    } catch (err: any) {
+      logger.error('DATABASE', 'Database restore failed', { error: err?.message });
+      res.status(500).json({ error: 'RESTORE_FAILED', message: err?.message });
+    }
   });
 
   // -------------------------------------------------------------

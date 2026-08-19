@@ -7,6 +7,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '../ui
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { DEMO_USER } from '../../lib/storage';
+import { ObservabilityCard } from './ObservabilityCard';
 import {
   Moon,
   Sun,
@@ -398,6 +399,9 @@ export function SettingsView() {
               </div>
             </CardContent>
           </Card>
+
+          {/* Observability & Real-World Telemetry */}
+          <ObservabilityCard />
         </div>
       </div>
     </div>

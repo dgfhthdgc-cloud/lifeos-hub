@@ -1,4 +1,5 @@
 import { Storage } from './storage';
+import { clientTelemetry } from './telemetry';
 import {
   UserProfile,
   TaskItem,
@@ -209,6 +210,24 @@ class DomainEventBus {
     }
 
     this.recordAudit(fullEvent);
+
+    if (typeof window !== 'undefined') {
+      try {
+        clientTelemetry.record({
+          type: 'domain_event',
+          category: fullEvent.type,
+          status: fullEvent.status === 'failed' ? 'failure' : 'success',
+          metadata: {
+            eventId: fullEvent.eventId,
+            entityId: fullEvent.entityId,
+            category: fullEvent.category,
+          },
+        });
+      } catch {
+        // Silently ignore telemetry failure
+      }
+    }
+
     return fullEvent;
   }
 
