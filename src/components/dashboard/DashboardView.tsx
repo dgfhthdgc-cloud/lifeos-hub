@@ -10,11 +10,16 @@ import {
   TaskItem,
   HabitItem,
   GoalItem,
+  NextBestAction,
+  UnifiedActivityEvent,
 } from '../../types';
 import { Storage } from '../../lib/storage';
 import { useAuth } from '../../context/AuthContext';
 import { useNotifications } from '../../context/NotificationContext';
+import { NextBestActionEngine } from '../../lib/nextBestAction';
+import { UnifiedActivityTimelineEngine } from '../../lib/activityTimeline';
 import { GreetingHeader } from './GreetingHeader';
+import { NextBestActionWidget } from './NextBestActionWidget';
 import { ProgressOverview } from './ProgressOverview';
 import { ScheduleWidget } from './ScheduleWidget';
 import { HabitsWidget } from './HabitsWidget';
@@ -23,7 +28,7 @@ import { LearningWidget } from './LearningWidget';
 import { TradingWatchlistWidget } from './TradingWatchlistWidget';
 import { AICoachInsightWidget } from './AICoachInsightWidget';
 import { BossRaidQuickCard } from './BossRaidQuickCard';
-import { CurrentFocus } from './CurrentFocus';
+import { UnifiedActivityTimeline } from './UnifiedActivityTimeline';
 import { AddTaskModal } from './AddTaskModal';
 
 interface DashboardViewProps {
@@ -40,6 +45,8 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
   const [courses, setCourses] = useState<CourseSummary[]>([]);
   const [watchlist, setWatchlist] = useState<WatchlistSummaryItem[]>([]);
   const [insight, setInsight] = useState<AIInsightSummary | null>(null);
+  const [nextBestActions, setNextBestActions] = useState<NextBestAction[]>([]);
+  const [activityEvents, setActivityEvents] = useState<UnifiedActivityEvent[]>([]);
   const [isAddTaskOpen, setIsAddTaskOpen] = useState(false);
 
   const loadData = () => {
@@ -49,6 +56,8 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
     setCourses(Storage.getCourses());
     setWatchlist(Storage.getWatchlist());
     setInsight(Storage.getAIInsight());
+    setNextBestActions(NextBestActionEngine.computeNextBestActions(3));
+    setActivityEvents(UnifiedActivityTimelineEngine.getTimelineEvents(15));
   };
 
   useEffect(() => {
@@ -91,7 +100,7 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
     progress: g.progress,
     totalMilestones: g.milestones.length,
     completedMilestones: g.milestones.filter((m) => m.completed).length,
-    targetDate: g.deadline,
+    targetDate: g.deadline || g.quarter || 'Q3 2026',
   }));
 
   const handleToggleTask = (taskId: string) => {
@@ -102,7 +111,7 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
       addXp(xpAwarded, `Completed task: ${task.title}`);
       showToast({
         title: 'Task Completed!',
-        description: task.title,
+        description: `${task.title} • +${xpAwarded} XP awarded`,
         type: 'xp',
         xpAmount: xpAwarded,
       });
@@ -117,10 +126,20 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
       addXp(xpAwarded, `Habit completed: ${habit.name}`);
       showToast({
         title: `Habit Checked: ${habit.name}! 🔥`,
-        description: `${habit.currentStreak} day streak maintained.`,
+        description: `${habit.currentStreak} day streak maintained. +${xpAwarded} XP awarded`,
         type: 'xp',
         xpAmount: xpAwarded,
       });
+    }
+  };
+
+  const handleExecutePrimaryAction = (action: NextBestAction) => {
+    if (action.type === 'habit' && action.entityId) {
+      handleToggleHabit(action.entityId);
+    } else if (action.type === 'task' && action.entityId) {
+      handleToggleTask(action.entityId);
+    } else {
+      onNavigate(action.targetPath);
     }
   };
 
@@ -146,18 +165,22 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
 
   return (
     <div className="space-y-6">
-      {/* 1. Greeting & Date Banner */}
+      {/* 1. Command Center Telemetry Header */}
       <GreetingHeader
         onNavigate={onNavigate}
         onAddTaskClick={() => setIsAddTaskOpen(true)}
+        habits={rawHabits}
+        goals={rawGoals}
       />
 
-      {/* 2. AI Coach Proactive Insight */}
-      {insight && (
-        <AICoachInsightWidget insight={insight} onNavigate={onNavigate} />
-      )}
+      {/* 2. Deterministic Next Best Action Priority Showcase */}
+      <NextBestActionWidget
+        actions={nextBestActions}
+        onNavigate={onNavigate}
+        onExecutePrimary={handleExecutePrimaryAction}
+      />
 
-      {/* 3. Progress Overview Metrics (Live XP & Streaks) */}
+      {/* 3. Progress Overview Metrics (Live XP, Streak Shields, Level Velocity) */}
       <ProgressOverview
         tasks={tasks}
         habits={habits}
@@ -165,16 +188,12 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
         xpEarnedToday={xpEarnedToday}
       />
 
-      {/* 4. Current Focus: Highest Priority Incomplete Objective */}
-      <CurrentFocus
-        tasks={rawTasks}
-        goals={rawGoals}
-        onToggleTask={handleToggleTask}
-        onNavigate={onNavigate}
-        onAddTaskClick={() => setIsAddTaskOpen(true)}
-      />
+      {/* 4. AI Strategic Pulse Insight */}
+      {insight && (
+        <AICoachInsightWidget insight={insight} onNavigate={onNavigate} />
+      )}
 
-      {/* 5. Core Execution Grid: Schedule + Habits */}
+      {/* 5. Core Execution Dual Grid: Schedule + Habits */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <ScheduleWidget
           tasks={tasks}
@@ -188,10 +207,20 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
         />
       </div>
 
-      {/* 6. Strategic Grid: Goals + Learning + Trading */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* 6. Strategic Timeline & Goals Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <UnifiedActivityTimeline
+          events={activityEvents}
+          onNavigate={onNavigate}
+          maxDisplay={8}
+        />
         <GoalsWidget goals={goals} onNavigate={onNavigate} />
+      </div>
+
+      {/* 7. Skill Mastery & World Systems Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <LearningWidget courses={courses} onNavigate={onNavigate} />
+        <BossRaidQuickCard onNavigate={onNavigate} />
         <TradingWatchlistWidget watchlist={watchlist} onNavigate={onNavigate} />
       </div>
 

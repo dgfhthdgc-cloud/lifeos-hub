@@ -178,6 +178,60 @@ export interface HabitSummary {
 }
 
 // -------------------------------------------------------------
+// PHASE 6: UNIFIED COMMAND CENTER & HUMAN EXPERIENCE TYPES
+// -------------------------------------------------------------
+
+export interface NextBestAction {
+  id: string;
+  type: 'task' | 'habit' | 'milestone' | 'learning' | 'review';
+  title: string;
+  subtitle?: string;
+  urgency: 'critical' | 'high' | 'medium' | 'normal';
+  priorityScore: number; // 0 to 100
+  why: string;
+  strategicImpact: string;
+  targetPath: RoutePath;
+  entityId?: string;
+  goalId?: string;
+  goalTitle?: string;
+  estimatedMinutes?: number;
+  xpReward: number;
+  bossDamage?: number;
+  streakRisk?: {
+    habitName: string;
+    currentStreak: number;
+    hoursRemaining: number;
+  };
+  aiRationale: string;
+}
+
+export interface UnifiedActivityEvent {
+  id: string;
+  type:
+    | 'task_completed'
+    | 'habit_completed'
+    | 'milestone_completed'
+    | 'lesson_completed'
+    | 'language_mastered'
+    | 'trade_logged'
+    | 'quest_claimed'
+    | 'boss_damaged'
+    | 'perk_unlocked'
+    | 'level_up'
+    | 'streak_shield_used'
+    | 'automation_fired';
+  title: string;
+  description?: string;
+  domain: 'execution' | 'habits' | 'goals' | 'learning' | 'languages' | 'trading' | 'rpg' | 'system';
+  xpAwarded: number;
+  timestamp: string;
+  relativeTime: string;
+  entityId?: string;
+  targetPath?: RoutePath;
+  metadata?: Record<string, any>;
+}
+
+// -------------------------------------------------------------
 // PLANNER HORIZONS & ROADMAPS
 // -------------------------------------------------------------
 

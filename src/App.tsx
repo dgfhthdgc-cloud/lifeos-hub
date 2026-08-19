@@ -71,7 +71,7 @@ function AppContent() {
         return <PlannerView />;
 
       case '/goals':
-        return <GoalsView />;
+        return <GoalsView onNavigate={navigate} />;
 
       case '/habits':
         return <HabitsView />;

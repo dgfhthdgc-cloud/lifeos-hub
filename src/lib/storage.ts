@@ -803,6 +803,11 @@ export const Storage = {
         const nextCompleted = !t.completed;
         if (nextCompleted) {
           awarded = t.xp || 20;
+          this.addXpTransaction({
+            amount: awarded,
+            reason: `Completed Task: "${t.title}"`,
+            category: 'task',
+          });
           const dmg = t.priority === 'high' ? 100 : t.priority === 'medium' ? 50 : 25;
           this.damageActiveBoss(dmg, `Completed Task: "${t.title}"`, 'task');
           this.triggerAutomations('task_completed', { priority: t.priority, category: t.category, title: t.title, xp: t.xp });
@@ -924,6 +929,11 @@ export const Storage = {
         } else {
           newHistory = [dateStr, ...h.history];
           awarded = h.xp || 15;
+          this.addXpTransaction({
+            amount: awarded,
+            reason: `Checked Habit: "${h.title || h.name}"`,
+            category: 'habit',
+          });
           this.damageActiveBoss(40, `Checked Habit: "${h.title || h.name}"`, 'habit');
         }
 

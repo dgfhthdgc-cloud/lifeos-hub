@@ -47,11 +47,11 @@ export function MobileNav({
   const canInstall = !isInstalled && (isInstallable || platform === 'ios');
 
   const primaryBottomTabs: { label: string; path: RoutePath; icon: React.ElementType }[] = [
-    { label: 'Home', path: '/dashboard', icon: LayoutDashboard },
+    { label: 'Today', path: '/dashboard', icon: LayoutDashboard },
+    { label: 'Goals', path: '/goals', icon: Target },
     { label: 'Planner', path: '/planner', icon: Calendar },
     { label: 'Habits', path: '/habits', icon: Flame },
-    { label: 'Learn', path: '/learn', icon: GraduationCap },
-    { label: 'Trading', path: '/trading', icon: TrendingUp },
+    { label: 'AI Coach', path: '/ai', icon: Sparkles },
   ];
 
   const navSections = [
