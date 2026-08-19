@@ -244,7 +244,7 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
     return Object.values(this.users).find((u) => u.email.toLowerCase() === normalized) || null;
   }
 
-  public createUser(email: string, passwordHash: string, salt: string, name: string): AuthUserRecord {
+  public createUser(email: string, passwordHash: string, salt: string, name: string, role?: 'admin' | 'user'): AuthUserRecord {
     const id = `usr_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const normalized = email.toLowerCase().trim();
 
@@ -261,6 +261,7 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
       email: normalized,
       passwordHash,
       salt,
+      role: role || 'user',
       createdAt: new Date().toISOString(),
       profile,
     };
@@ -284,6 +285,13 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
 
     this.saveToDisk();
     return record;
+  }
+
+  public setUserRole(userId: string, role: 'admin' | 'user'): void {
+    const user = this.users[userId];
+    if (!user) throw new Error('User not found');
+    user.role = role;
+    this.saveToDisk();
   }
 
   public updateUserProfile(userId: string, updates: Partial<UserProfile>): UserProfile {

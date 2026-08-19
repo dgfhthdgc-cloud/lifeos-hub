@@ -6,6 +6,7 @@ export interface AppConfig {
   databaseUrl: string | null;
   isPostgres: boolean;
   requirePostgres: boolean;
+  isMultiInstance: boolean;
   enableLiveTrading: boolean;
 }
 
@@ -20,6 +21,11 @@ export function validateEnvironment(): AppConfig {
   const geminiApiKey = process.env.GEMINI_API_KEY?.trim() || null;
   const databaseUrl = process.env.DATABASE_URL?.trim() || null;
   const requirePostgres = process.env.REQUIRE_POSTGRES === 'true';
+  const isMultiInstance =
+    process.env.STORAGE_MODE === 'multi-instance' ||
+    process.env.DEPLOYMENT_MODE === 'multi_instance' ||
+    process.env.MULTI_INSTANCE === 'true' ||
+    process.env.CLUSTER_MODE === 'true';
 
   // Live trading is permanently disabled in architecture
   const enableLiveTrading = false;
@@ -48,9 +54,9 @@ export function validateEnvironment(): AppConfig {
     }
   }
 
-  if (requirePostgres && !isPostgres) {
+  if ((requirePostgres || isMultiInstance) && !isPostgres) {
     throw new Error(
-      'FATAL CONFIGURATION: REQUIRE_POSTGRES is true but DATABASE_URL is not a valid PostgreSQL connection string.'
+      'FATAL CONFIGURATION: Multi-instance or REQUIRE_POSTGRES mode requires a valid PostgreSQL DATABASE_URL. SQLite is strictly single-instance only.'
     );
   }
 
@@ -62,6 +68,7 @@ export function validateEnvironment(): AppConfig {
     databaseUrl,
     isPostgres,
     requirePostgres,
+    isMultiInstance,
     enableLiveTrading,
   };
 

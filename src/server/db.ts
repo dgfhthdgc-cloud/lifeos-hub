@@ -40,17 +40,16 @@ export function isValidPostgresUrl(urlStr: string | undefined | null): boolean {
 export async function initDatabase(): Promise<DatabaseAdapter> {
   const dbUrl = process.env.DATABASE_URL;
   const requirePostgres = process.env.REQUIRE_POSTGRES === 'true';
+  const isMultiInstance =
+    process.env.STORAGE_MODE === 'multi-instance' ||
+    process.env.DEPLOYMENT_MODE === 'multi_instance' ||
+    process.env.MULTI_INSTANCE === 'true' ||
+    process.env.CLUSTER_MODE === 'true';
   const isProduction = process.env.NODE_ENV === 'production';
 
-  if (requirePostgres && !isValidPostgresUrl(dbUrl)) {
+  if ((requirePostgres || isMultiInstance) && !isValidPostgresUrl(dbUrl)) {
     throw new Error(
-      'FATAL DATABASE CONFIGURATION: REQUIRE_POSTGRES is true but DATABASE_URL is missing or not a valid PostgreSQL connection string.'
-    );
-  }
-
-  if (requirePostgres && !isValidPostgresUrl(dbUrl)) {
-    throw new Error(
-      'FATAL DATABASE ERROR: REQUIRE_POSTGRES is set to true, but DATABASE_URL is missing or is not a valid PostgreSQL connection string.'
+      'FATAL DATABASE CONFIGURATION: Multi-instance or REQUIRE_POSTGRES is active but DATABASE_URL is missing or not a valid PostgreSQL connection string. SQLite is strictly single-instance only.'
     );
   }
 

@@ -25,6 +25,7 @@ declare global {
       user?: {
         userId: string;
         email: string;
+        role: 'admin' | 'user';
       };
       requestId?: string;
     }
@@ -182,8 +183,27 @@ async function startServer() {
       return res.status(401).json({ error: 'INVALID_TOKEN', message: 'Session token invalid or expired.' });
     }
 
-    req.user = { userId: payload.userId, email: payload.email };
+    req.user = { userId: payload.userId, email: payload.email, role: payload.role || 'user' };
     next();
+  };
+
+  // Administrator RBAC Guard Middleware
+  const requireAdmin = (req: Request, res: Response, next: NextFunction) => {
+    requireAuth(req, res, () => {
+      if (req.user?.role !== 'admin') {
+        logger.security('AUTH', 'Access denied: Administrator privileges required', {
+          userId: req.user?.userId,
+          email: req.user?.email,
+          role: req.user?.role,
+          path: req.path,
+        });
+        return res.status(403).json({
+          error: 'FORBIDDEN',
+          message: 'Access denied: Administrator privileges required for this resource.',
+        });
+      }
+      next();
+    });
   };
 
   // Lazy initialize Gemini AI client
@@ -214,12 +234,16 @@ async function startServer() {
         return res.status(400).json({ error: 'INVALID_EMAIL', message: 'Email address exceeds maximum length.' });
       }
 
+      const normalizedEmail = email.trim().toLowerCase();
+      const adminEmail = (process.env.ADMIN_EMAIL || process.env.INITIAL_ADMIN_EMAIL || '').trim().toLowerCase();
+      const role: 'admin' | 'user' = (adminEmail && normalizedEmail === adminEmail) ? 'admin' : 'user';
+
       const { hash, salt } = hashPassword(password);
-      const userRecord = await db.createUser(email, hash, salt, typeof name === 'string' ? name : '');
-      const token = generateAuthToken({ userId: userRecord.id, email: userRecord.email });
+      const userRecord = await db.createUser(normalizedEmail, hash, salt, typeof name === 'string' ? name : '', role);
+      const token = generateAuthToken({ userId: userRecord.id, email: userRecord.email, role: userRecord.role || 'user' });
 
       serverTelemetry.recordFunnelStep(userRecord.id, 'signup');
-      logger.info('AUTH', `New user registered: ${userRecord.email}`, { userId: userRecord.id });
+      logger.info('AUTH', `New user registered: ${userRecord.email} [role: ${userRecord.role || 'user'}]`, { userId: userRecord.id });
 
       res.json({
         success: true,
@@ -251,8 +275,8 @@ async function startServer() {
         return res.status(401).json({ error: 'INVALID_CREDENTIALS', message: 'Invalid email or password.' });
       }
 
-      const token = generateAuthToken({ userId: userRecord.id, email: userRecord.email });
-      logger.info('AUTH', `User logged in successfully: ${userRecord.email}`, { userId: userRecord.id });
+      const token = generateAuthToken({ userId: userRecord.id, email: userRecord.email, role: userRecord.role || 'user' });
+      logger.info('AUTH', `User logged in successfully: ${userRecord.email} [role: ${userRecord.role || 'user'}]`, { userId: userRecord.id });
 
       res.json({
         success: true,
@@ -873,10 +897,10 @@ ${sanitizedQuestion}
   });
 
   // -------------------------------------------------------------
-  // PHASE 8 TELEMETRY & OBSERVABILITY API
+  // PHASE 8 TELEMETRY & OBSERVABILITY API (ADMIN PROTECTED)
   // -------------------------------------------------------------
 
-  app.get('/api/telemetry/metrics', requireAuth, (_req, res) => {
+  app.get('/api/telemetry/metrics', requireAdmin, (_req, res) => {
     try {
       const metrics = serverTelemetry.getMetrics();
       res.json({
@@ -941,7 +965,7 @@ ${sanitizedQuestion}
     }
   });
 
-  app.get('/api/telemetry/feedback', requireAuth, (_req, res) => {
+  app.get('/api/telemetry/feedback', requireAdmin, (_req, res) => {
     try {
       const feedback = serverTelemetry.getFeedback();
       res.json({ success: true, count: feedback.length, feedback });
@@ -951,10 +975,10 @@ ${sanitizedQuestion}
   });
 
   // -------------------------------------------------------------
-  // DISASTER RECOVERY, BACKUP & RESTORE API
+  // DISASTER RECOVERY, BACKUP & RESTORE API (ADMIN ONLY)
   // -------------------------------------------------------------
 
-  app.post('/api/admin/backup/create', requireAuth, async (_req, res) => {
+  app.post('/api/admin/backup/create', requireAdmin, async (_req, res) => {
     try {
       const metadata = await backupManager.createBackup();
       logger.info('DATABASE', `Point-in-time backup snapshot created: ${metadata.filename}`, {
@@ -969,7 +993,7 @@ ${sanitizedQuestion}
     }
   });
 
-  app.get('/api/admin/backup/list', requireAuth, (_req, res) => {
+  app.get('/api/admin/backup/list', requireAdmin, (_req, res) => {
     try {
       const backups = backupManager.listBackups();
       res.json({ success: true, count: backups.length, backups });
@@ -978,7 +1002,7 @@ ${sanitizedQuestion}
     }
   });
 
-  app.post('/api/admin/backup/verify', requireAuth, async (req, res) => {
+  app.post('/api/admin/backup/verify', requireAdmin, async (req, res) => {
     try {
       const { filepath, expectedChecksum } = req.body;
       if (!filepath || typeof filepath !== 'string') {
@@ -992,7 +1016,7 @@ ${sanitizedQuestion}
     }
   });
 
-  app.post('/api/admin/backup/restore', requireAuth, async (req, res) => {
+  app.post('/api/admin/backup/restore', requireAdmin, async (req, res) => {
     try {
       const { filepath } = req.body;
       if (!filepath || typeof filepath !== 'string') {

@@ -92,6 +92,7 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
         email TEXT UNIQUE NOT NULL,
         password_hash TEXT NOT NULL,
         salt TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'user',
         created_at TEXT NOT NULL
       );
 
@@ -291,6 +292,19 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
       if (!cols.includes('milestone_id')) {
         this.db.run('ALTER TABLE tasks ADD COLUMN milestone_id TEXT;');
       }
+
+      const userColStmt = this.db.prepare('PRAGMA table_info(users);');
+      const userCols: string[] = [];
+      while (userColStmt.step()) {
+        const obj = userColStmt.getAsObject();
+        if (obj && typeof obj.name === 'string') {
+          userCols.push(obj.name);
+        }
+      }
+      userColStmt.free();
+      if (!userCols.includes('role')) {
+        this.db.run("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user';");
+      }
     } catch {
       // Ignored if PRAGMA or ALTER fails
     }
@@ -363,6 +377,7 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
       email: userRow.email as string,
       passwordHash: userRow.password_hash as string,
       salt: userRow.salt as string,
+      role: (userRow.role as 'admin' | 'user') || 'user',
       createdAt: userRow.created_at as string,
       profile,
     };
@@ -389,12 +404,19 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
       email: userRow.email as string,
       passwordHash: userRow.password_hash as string,
       salt: userRow.salt as string,
+      role: (userRow.role as 'admin' | 'user') || 'user',
       createdAt: userRow.created_at as string,
       profile,
     };
   }
 
-  public createUser(email: string, passwordHash: string, salt: string, name: string): AuthUserRecord {
+  public setUserRole(userId: string, role: 'admin' | 'user'): void {
+    this.ensureInitialized();
+    this.db!.run('UPDATE users SET role = ? WHERE id = ?', [role, userId]);
+    this.saveToDisk();
+  }
+
+  public createUser(email: string, passwordHash: string, salt: string, name: string, role?: 'admin' | 'user'): AuthUserRecord {
     this.ensureInitialized();
     const normalized = email.trim().toLowerCase();
     const existing = this.getUserByEmail(normalized);
@@ -404,6 +426,7 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
 
     const id = `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const now = new Date().toISOString();
+    const userRole: 'admin' | 'user' = role || 'user';
 
     const profile: UserProfile = {
       ...INITIAL_USER,
@@ -416,8 +439,8 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
     this.db!.run('BEGIN TRANSACTION;');
     try {
       this.db!.run(
-        'INSERT INTO users (id, email, password_hash, salt, created_at) VALUES (?, ?, ?, ?, ?)',
-        [id, normalized, passwordHash, salt, now]
+        'INSERT INTO users (id, email, password_hash, salt, role, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        [id, normalized, passwordHash, salt, userRole, now]
       );
 
       this.db!.run(
@@ -512,6 +535,7 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
       email: normalized,
       passwordHash,
       salt,
+      role: userRole,
       createdAt: now,
       profile,
     };

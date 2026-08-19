@@ -52,6 +52,7 @@ export class PostgresDatabaseAdapter implements DatabaseAdapter {
           email VARCHAR(255) UNIQUE NOT NULL,
           password_hash TEXT NOT NULL,
           salt TEXT NOT NULL,
+          role VARCHAR(20) NOT NULL DEFAULT 'user',
           created_at TIMESTAMP WITH TIME ZONE NOT NULL
         );
 
@@ -235,6 +236,7 @@ export class PostgresDatabaseAdapter implements DatabaseAdapter {
 
         ALTER TABLE tasks ADD COLUMN IF NOT EXISTS goal_id VARCHAR(100);
         ALTER TABLE tasks ADD COLUMN IF NOT EXISTS milestone_id VARCHAR(100);
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'user';
       `);
       this.isInitialized = true;
     } finally {
@@ -316,6 +318,7 @@ export class PostgresDatabaseAdapter implements DatabaseAdapter {
       email: userRow.email,
       passwordHash: userRow.password_hash,
       salt: userRow.salt,
+      role: (userRow.role as 'admin' | 'user') || 'user',
       createdAt: userRow.created_at ? new Date(userRow.created_at).toISOString() : new Date().toISOString(),
       profile,
     };
@@ -336,12 +339,18 @@ export class PostgresDatabaseAdapter implements DatabaseAdapter {
       email: userRow.email,
       passwordHash: userRow.password_hash,
       salt: userRow.salt,
+      role: (userRow.role as 'admin' | 'user') || 'user',
       createdAt: userRow.created_at ? new Date(userRow.created_at).toISOString() : new Date().toISOString(),
       profile,
     };
   }
 
-  public async createUser(email: string, passwordHash: string, salt: string, name: string): Promise<AuthUserRecord> {
+  public async setUserRole(userId: string, role: 'admin' | 'user'): Promise<void> {
+    this.ensureInitialized();
+    await this.pool.query('UPDATE users SET role = $1 WHERE id = $2', [role, userId]);
+  }
+
+  public async createUser(email: string, passwordHash: string, salt: string, name: string, role?: 'admin' | 'user'): Promise<AuthUserRecord> {
     this.ensureInitialized();
     const normalized = email.trim().toLowerCase();
     const existing = await this.getUserByEmail(normalized);
@@ -351,6 +360,7 @@ export class PostgresDatabaseAdapter implements DatabaseAdapter {
 
     const id = `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const now = new Date().toISOString();
+    const userRole: 'admin' | 'user' = role || 'user';
 
     const profile: UserProfile = {
       ...INITIAL_USER,
@@ -365,8 +375,8 @@ export class PostgresDatabaseAdapter implements DatabaseAdapter {
       await client.query('BEGIN');
 
       await client.query(
-        'INSERT INTO users (id, email, password_hash, salt, created_at) VALUES ($1, $2, $3, $4, $5)',
-        [id, normalized, passwordHash, salt, now]
+        'INSERT INTO users (id, email, password_hash, salt, role, created_at) VALUES ($1, $2, $3, $4, $5, $6)',
+        [id, normalized, passwordHash, salt, userRole, now]
       );
 
       await client.query(
@@ -462,6 +472,7 @@ export class PostgresDatabaseAdapter implements DatabaseAdapter {
       email: normalized,
       passwordHash,
       salt,
+      role: userRole,
       createdAt: now,
       profile,
     };
@@ -1076,42 +1087,50 @@ export class PostgresDatabaseAdapter implements DatabaseAdapter {
   ): Promise<TaskCompletionResult> {
     this.ensureInitialized();
 
-    const cached = await this.getCachedEvent(userId, clientEventId);
-    if (cached) return cached;
-
-    const taskRes = await this.pool.query('SELECT * FROM tasks WHERE id = $1 AND user_id = $2', [taskId, userId]);
-    if (taskRes.rows.length === 0) {
-      const meta = await this.getUserState(userId);
-      return { success: false, version: meta.version, error: 'TASK_NOT_FOUND' };
-    }
-    const taskRow = taskRes.rows[0];
-
-    if (taskRow.completed) {
-      const state = await this.getUserState(userId);
-      const task = state.tasks.find((t) => t.id === taskId);
-      const alreadyCompletedRes: TaskCompletionResult = {
-        success: true,
-        task,
-        profile: state.profile,
-        version: state.version,
-        alreadyCompleted: true,
-      };
-      if (clientEventId) {
-        await this.cacheEvent(this.pool, userId, clientEventId, alreadyCompletedRes);
-      }
-      return alreadyCompletedRes;
-    }
-
-    let awardedXp = 50;
-    if (taskRow.priority === 'high') awardedXp = 150;
-    else if (taskRow.priority === 'medium') awardedXp = 100;
-    if (typeof taskRow.xp === 'number' && taskRow.xp > 0 && taskRow.xp <= 300) {
-      awardedXp = Math.floor(taskRow.xp);
-    }
-
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+
+      const cached = await this.getCachedEvent(userId, clientEventId);
+      if (cached) {
+        await client.query('ROLLBACK');
+        return cached;
+      }
+
+      const taskRes = await client.query(
+        'SELECT * FROM tasks WHERE id = $1 AND user_id = $2 FOR UPDATE',
+        [taskId, userId]
+      );
+      if (taskRes.rows.length === 0) {
+        await client.query('ROLLBACK');
+        const meta = await this.getUserState(userId);
+        return { success: false, version: meta.version, error: 'TASK_NOT_FOUND' };
+      }
+      const taskRow = taskRes.rows[0];
+
+      if (taskRow.completed) {
+        const state = await this.getUserState(userId);
+        const task = state.tasks.find((t) => t.id === taskId);
+        const alreadyCompletedRes: TaskCompletionResult = {
+          success: true,
+          task,
+          profile: state.profile,
+          version: state.version,
+          alreadyCompleted: true,
+        };
+        if (clientEventId) {
+          await this.cacheEvent(client, userId, clientEventId, alreadyCompletedRes);
+        }
+        await client.query('COMMIT');
+        return alreadyCompletedRes;
+      }
+
+      let awardedXp = 50;
+      if (taskRow.priority === 'high') awardedXp = 150;
+      else if (taskRow.priority === 'medium') awardedXp = 100;
+      if (typeof taskRow.xp === 'number' && taskRow.xp > 0 && taskRow.xp <= 300) {
+        awardedXp = Math.floor(taskRow.xp);
+      }
 
       const completedAt = new Date().toISOString();
       await client.query(

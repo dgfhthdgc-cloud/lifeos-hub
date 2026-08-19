@@ -5,6 +5,7 @@ export interface AuthUserRecord {
   email: string;
   passwordHash: string;
   salt: string;
+  role?: 'admin' | 'user';
   createdAt: string;
   profile: UserProfile;
 }
@@ -29,5 +30,6 @@ export interface UserDatabaseState {
 export interface AuthTokenPayload {
   userId: string;
   email: string;
+  role?: 'admin' | 'user';
   exp: number;
 }

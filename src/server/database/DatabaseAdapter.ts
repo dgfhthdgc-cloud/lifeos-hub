@@ -48,7 +48,8 @@ export interface GoalProgressResult {
 export interface DatabaseAdapter {
   getUserById(id: string): (AuthUserRecord | null) | Promise<AuthUserRecord | null>;
   getUserByEmail(email: string): (AuthUserRecord | null) | Promise<AuthUserRecord | null>;
-  createUser(email: string, passwordHash: string, salt: string, name: string): AuthUserRecord | Promise<AuthUserRecord>;
+  createUser(email: string, passwordHash: string, salt: string, name: string, role?: 'admin' | 'user'): AuthUserRecord | Promise<AuthUserRecord>;
+  setUserRole(userId: string, role: 'admin' | 'user'): void | Promise<void>;
   updateUserProfile(userId: string, updates: Partial<UserProfile>): UserProfile | Promise<UserProfile>;
   getUserState(userId: string): UserDatabaseState | Promise<UserDatabaseState>;
   syncUserState(userId: string, syncPayload: { baseVersion?: number; changes?: Partial<UserDatabaseState> }): SyncResult | Promise<SyncResult>;

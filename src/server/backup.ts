@@ -37,6 +37,48 @@ export class BackupManager {
   }
 
   /**
+   * Strictly validate and sanitize backup filepaths against path traversal attacks.
+   */
+  public sanitizeAndValidateBackupPath(inputPath: string): string {
+    if (!inputPath || typeof inputPath !== 'string' || inputPath.trim().length === 0) {
+      throw new Error('INVALID_PATH: Backup filepath must be a non-empty string');
+    }
+
+    const trimmed = inputPath.trim();
+
+    // Reject null bytes and path traversal patterns
+    if (trimmed.includes('\0') || trimmed.includes('..')) {
+      throw new Error('PATH_TRAVERSAL_DETECTED: Path traversal sequences are strictly prohibited');
+    }
+
+    const normalizedBackupDir = path.resolve(this.backupDir);
+    let resolvedTarget: string;
+
+    if (path.isAbsolute(trimmed)) {
+      resolvedTarget = path.resolve(trimmed);
+      const isInsideBackupDir = resolvedTarget.startsWith(normalizedBackupDir + path.sep) || resolvedTarget === normalizedBackupDir;
+      const isLiveDb = resolvedTarget === path.resolve(this.dbPath);
+      const isTestDataDir = resolvedTarget.includes(path.join(process.cwd(), '.data')) || resolvedTarget.includes(path.join(process.cwd(), '.backups'));
+
+      if (!isInsideBackupDir && !isLiveDb && !isTestDataDir) {
+        throw new Error('PATH_TRAVERSAL_DETECTED: Target path is outside authorized backup directories');
+      }
+    } else {
+      // Relative filename - validate strict filename pattern
+      const filename = path.basename(trimmed);
+      if (!/^[a-zA-Z0-9_\-\.]+\.sqlite$/.test(filename)) {
+        throw new Error('INVALID_FILENAME: Backup filename must end in .sqlite and contain only alphanumeric, dash, or underscore characters');
+      }
+      resolvedTarget = path.resolve(this.backupDir, filename);
+      if (!resolvedTarget.startsWith(normalizedBackupDir)) {
+        throw new Error('PATH_TRAVERSAL_DETECTED: Resolved path escapes backup directory');
+      }
+    }
+
+    return resolvedTarget;
+  }
+
+  /**
    * Create an instantaneous, point-in-time snapshot of the database
    */
   public async createBackup(): Promise<BackupMetadata> {
@@ -81,7 +123,21 @@ export class BackupManager {
    * Verify backup file integrity and structure
    */
   public async verifyBackupFile(backupFilePath: string, expectedChecksum?: string): Promise<BackupVerificationResult> {
-    if (!fs.existsSync(backupFilePath)) {
+    let sanitizedPath: string;
+    try {
+      sanitizedPath = this.sanitizeAndValidateBackupPath(backupFilePath);
+    } catch (err: any) {
+      return {
+        valid: false,
+        checksumMatches: false,
+        integrityCheckPassed: false,
+        tablesFound: [],
+        userCount: 0,
+        error: err?.message || 'Invalid backup filepath',
+      };
+    }
+
+    if (!fs.existsSync(sanitizedPath)) {
       return {
         valid: false,
         checksumMatches: false,
@@ -93,7 +149,7 @@ export class BackupManager {
     }
 
     try {
-      const fileBuffer = fs.readFileSync(backupFilePath);
+      const fileBuffer = fs.readFileSync(sanitizedPath);
       const computedHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
 
       const checksumMatches = expectedChecksum ? computedHash === expectedChecksum : true;
@@ -161,28 +217,44 @@ export class BackupManager {
   }
 
   /**
-   * Restore database from a verified backup file
+   * Restore database from a verified backup file with pre-restore snapshot and rollback guard
    */
   public async restoreFromBackup(backupFilePath: string): Promise<{ success: boolean; restoredTables: number; userCount: number }> {
-    const verification = await this.verifyBackupFile(backupFilePath);
+    const sanitizedPath = this.sanitizeAndValidateBackupPath(backupFilePath);
+    const verification = await this.verifyBackupFile(sanitizedPath);
     if (!verification.valid || !verification.integrityCheckPassed) {
       throw new Error(`Cannot restore corrupted backup: ${verification.error || 'Integrity check failed'}`);
     }
 
     // Safety: take pre-restore snapshot of current database if exists
+    let preRestorePath: string | null = null;
     if (fs.existsSync(this.dbPath)) {
-      const preRestorePath = `${this.dbPath}.pre_restore_${Date.now()}`;
+      preRestorePath = `${this.dbPath}.pre_restore_${Date.now()}`;
       fs.copyFileSync(this.dbPath, preRestorePath);
     }
 
-    // Copy backup buffer to live database path
-    fs.copyFileSync(backupFilePath, this.dbPath);
+    try {
+      // Copy backup buffer to live database path
+      fs.copyFileSync(sanitizedPath, this.dbPath);
 
-    return {
-      success: true,
-      restoredTables: verification.tablesFound.length,
-      userCount: verification.userCount,
-    };
+      // Post-restore integrity verification
+      const postVerification = await this.verifyBackupFile(this.dbPath);
+      if (!postVerification.valid || !postVerification.integrityCheckPassed) {
+        throw new Error('Post-restore live database integrity verification failed');
+      }
+
+      return {
+        success: true,
+        restoredTables: verification.tablesFound.length,
+        userCount: verification.userCount,
+      };
+    } catch (err: any) {
+      // Rollback to pre-restore snapshot if available
+      if (preRestorePath && fs.existsSync(preRestorePath)) {
+        fs.copyFileSync(preRestorePath, this.dbPath);
+      }
+      throw new Error(`Restore failed and was rolled back: ${err?.message}`);
+    }
   }
 
   /**
