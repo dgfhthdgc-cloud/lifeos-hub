@@ -54,6 +54,7 @@ export function AICoachMainView() {
 
     try {
       const token = localStorage.getItem('lifeos_auth_token');
+      const lifeContext = Storage.getLifeContext();
       const resp = await fetch('/api/ai/coach/chat', {
         method: 'POST',
         headers: {
@@ -63,6 +64,7 @@ export function AICoachMainView() {
         body: JSON.stringify({
           message: userPrompt,
           history: newHistory.map((m) => ({ role: m.role, content: m.content })),
+          context: lifeContext,
         }),
       });
 

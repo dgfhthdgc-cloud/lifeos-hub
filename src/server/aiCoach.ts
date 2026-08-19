@@ -21,6 +21,7 @@ export interface AICoachChatOptions {
   userState: UserDatabaseState;
   userMessage: string;
   conversationHistory: { role: string; content: string }[];
+  clientContext?: Record<string, any>;
 }
 
 export async function generateAICoachResponse(options: AICoachChatOptions): Promise<{
@@ -28,10 +29,10 @@ export async function generateAICoachResponse(options: AICoachChatOptions): Prom
   modelUsed: string;
   suggestedActions?: Array<{ type: string; title: string; payload?: any }>;
 }> {
-  const { userState, userMessage, conversationHistory } = options;
+  const { userState, userMessage, conversationHistory, clientContext } = options;
   const ai = getGemini();
 
-  // Aggregate user context telemetry
+  // Aggregate user context telemetry from DB and enrich with client multi-domain context
   const profile = userState.profile;
   const activeTasks = (userState.tasks || []).filter((t) => !t.completed);
   const completedTodayTasks = (userState.tasks || []).filter(
@@ -58,6 +59,7 @@ export async function generateAICoachResponse(options: AICoachChatOptions): Prom
       activeHabitStreaks: habits.map((h) => ({ name: h.name, streak: h.currentStreak, completedToday: h.completedToday })),
       goalsOverview: goals.map((g) => ({ title: g.title, progress: g.progress, priority: g.priority })),
       recentTradingSummary: recentTrades.map((tr) => ({ symbol: tr.symbol, status: tr.status, pnl: tr.pnl, rMultiple: tr.rMultiple })),
+      ...(clientContext || {}),
     },
   };
 

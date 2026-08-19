@@ -637,6 +637,7 @@ async function startServer() {
         userState,
         userMessage: message.trim(),
         conversationHistory: Array.isArray(history) ? history.slice(-6) : [],
+        clientContext: req.body.context && typeof req.body.context === 'object' ? req.body.context : undefined,
       });
 
       // Persist in user's AI conversation history
