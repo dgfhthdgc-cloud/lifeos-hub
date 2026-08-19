@@ -25,25 +25,43 @@ export function TopBar({ currentPath, onNavigate, onOpenSearch, onOpenMobileMenu
       case '/dashboard':
         return { title: 'Dashboard', subtitle: 'Life Intelligence & Daily Pulse' };
       case '/planner':
-        return { title: 'Planner', subtitle: 'Day, Week, Month & 5-Year Life Architecture' };
+        return { title: 'Planner', subtitle: 'Daily Execution, Time Blocking & Life Architecture' };
       case '/goals':
         return { title: 'Goals & Milestones', subtitle: 'Long-term Aspirations & High-Impact Targets' };
       case '/habits':
-        return { title: 'Habits & Streaks', subtitle: 'Consistent Micro-Behaviors & Compounding Daily Wins' };
+        return { title: 'Habits & Streaks', subtitle: 'Consistent Micro-Behaviors & Daily Wins' };
+      case '/ai':
+        return { title: 'AI Coach & Guidance', subtitle: 'Proactive Adaptation & Intelligence Engine' };
+      case '/analytics':
+        return { title: 'Analytics & Insights', subtitle: 'Productivity Trends, XP Velocity & Performance' };
+      case '/simulator':
+        return { title: 'Life Simulator', subtitle: 'Scenario Modeling & Trajectory Predictions' };
+      case '/integrations':
+        return { title: 'Biometrics & Hub', subtitle: 'Health Tracking & Device Synchronization' };
       case '/learn':
-        return { title: 'Learning Platform', subtitle: 'AI, Machine Learning, Programming & Trading' };
+        return { title: 'Mastery & Learning', subtitle: 'Technical Curriculum & Knowledge Acquisition' };
       case '/languages':
-        return { title: 'Language Learning', subtitle: 'Gamified Vocabulary, Grammar & Fluency Path' };
+        return { title: 'Language Acquisition', subtitle: 'Spaced Repetition, Drills & Fluency' };
       case '/trading':
       case '/trading/replay':
       case '/trading/journal':
         return { title: 'Trading Terminal', subtitle: 'Execution, Replay & Risk Analytics' };
-      case '/ai':
-        return { title: 'AI Assistant & Coach', subtitle: 'Proactive Personal Guidance & Autonomous Planning' };
       case '/progress':
-        return { title: 'Progress & Gamification', subtitle: 'XP Matrix, Skill Trees, Levels & Quest Rewards' };
+        return { title: 'Progression & RPG', subtitle: 'Character Sheet, XP Ledger & Skill Matrices' };
+      case '/bosses':
+        return { title: 'Boss Raids', subtitle: 'Collaborative Quests & High-Stakes Focus Battles' };
+      case '/perks':
+        return { title: 'Perk Tree', subtitle: 'Talents, Multipliers & Specialization Unlocks' };
+      case '/syndicate':
+        return { title: 'Syndicate & Guilds', subtitle: 'Social Accountability & Collective Quests' };
+      case '/automations':
+        return { title: 'Automations & Rules', subtitle: 'Event Triggers, Workflows & Webhooks' };
+      case '/vault':
+        return { title: 'Knowledge Vault', subtitle: 'Encrypted Notes, Documents & Artifacts' };
+      case '/swarm':
+        return { title: 'Swarm Command', subtitle: 'Multi-Agent Autonomous Orchestration' };
       case '/settings':
-        return { title: 'Settings', subtitle: 'Profile, Data Persistence, Security & Themes' };
+        return { title: 'Settings', subtitle: 'Profile, Persistence, Security & Appearance' };
       default:
         return { title: 'LIFE OS', subtitle: 'Personal Operating System' };
     }

@@ -818,6 +818,36 @@ export const Storage = {
     });
 
     this.setTasks(updated);
+
+    // Synchronize linked Goal Milestone if goalId and milestoneId exist
+    if (targetTask && (targetTask as TaskItem).goalId && (targetTask as TaskItem).milestoneId) {
+      const gId = (targetTask as TaskItem).goalId!;
+      const mId = (targetTask as TaskItem).milestoneId!;
+      const isDone = (targetTask as TaskItem).completed;
+      const goals = this.getGoals();
+      const nextGoals = goals.map((g) => {
+        if (g.id === gId) {
+          const nextMilestones = g.milestones.map((m) => {
+            if (m.id === mId) {
+              return { ...m, completed: isDone };
+            }
+            return m;
+          });
+          const compCount = nextMilestones.filter((m) => m.completed).length;
+          const prog = nextMilestones.length > 0 ? Math.round((compCount / nextMilestones.length) * 100) : 0;
+          return {
+            ...g,
+            milestones: nextMilestones,
+            progress: prog,
+            completed: prog === 100,
+            status: prog === 100 ? 'achieved' : g.status,
+          };
+        }
+        return g;
+      });
+      this.setGoals(nextGoals);
+    }
+
     return { task: targetTask, xpAwarded: awarded };
   },
 
@@ -1016,6 +1046,32 @@ export const Storage = {
     });
 
     this.setGoals(updated);
+
+    // Synchronize linked Tasks if any exist for this goal & milestone
+    if (targetGoal) {
+      const milestone = targetGoal.milestones.find((m) => m.id === milestoneId);
+      if (milestone) {
+        const isDone = milestone.completed;
+        const currentTasks = this.getTasks();
+        let taskModified = false;
+        const nextTasks = currentTasks.map((t) => {
+          if (t.goalId === goalId && t.milestoneId === milestoneId) {
+            taskModified = true;
+            return {
+              ...t,
+              completed: isDone,
+              status: isDone ? 'completed' : 'todo',
+              completedAt: isDone ? new Date().toISOString() : undefined,
+            } as TaskItem;
+          }
+          return t;
+        });
+        if (taskModified) {
+          this.setTasks(nextTasks);
+        }
+      }
+    }
+
     return { goal: targetGoal, xpAwarded: awarded };
   },
 
@@ -3120,6 +3176,21 @@ export const Storage = {
       return true;
     } catch {
       return false;
+    }
+  },
+
+  clearAllUserData(): void {
+    if (typeof window === 'undefined') return;
+    try {
+      Object.values(STORAGE_KEYS).forEach((key) => {
+        localStorage.removeItem(key);
+      });
+      localStorage.removeItem('lifeos_auth_token');
+      localStorage.removeItem('lifeos_demo_mode');
+      localStorage.removeItem('lifeos_offline_queue');
+      localStorage.removeItem('lifeos_sync_version');
+    } catch (err) {
+      console.error('Error clearing local user data', err);
     }
   },
 };

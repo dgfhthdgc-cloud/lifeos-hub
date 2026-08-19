@@ -28,6 +28,12 @@ export async function initDatabase(): Promise<DatabaseAdapter> {
   const dbUrl = process.env.DATABASE_URL;
   const requirePostgres = process.env.REQUIRE_POSTGRES === 'true';
 
+  if (requirePostgres && !isValidPostgresUrl(dbUrl)) {
+    throw new Error(
+      'FATAL DATABASE ERROR: REQUIRE_POSTGRES is set to true, but DATABASE_URL is missing or is not a valid PostgreSQL connection string.'
+    );
+  }
+
   if (isValidPostgresUrl(dbUrl)) {
     try {
       logger.info('DATABASE', 'Connecting to PostgreSQL database cluster...');
@@ -49,11 +55,6 @@ export async function initDatabase(): Promise<DatabaseAdapter> {
       );
     }
   } else if (dbUrl && dbUrl.trim() !== '') {
-    if (requirePostgres) {
-      throw new Error(
-        'FATAL DATABASE ERROR: REQUIRE_POSTGRES is true but DATABASE_URL is not a valid PostgreSQL connection string.'
-      );
-    }
     logger.info('DATABASE', 'DATABASE_URL is not a postgres string. Using durable SQLite engine.');
   }
 

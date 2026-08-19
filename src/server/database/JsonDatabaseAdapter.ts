@@ -566,6 +566,20 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
 
     const clean = this.sanitizeKeys(taskInput);
 
+    let validatedGoalId: string | undefined = undefined;
+    let validatedMilestoneId: string | undefined = undefined;
+    if (clean.goalId && typeof clean.goalId === 'string') {
+      const g = state.goals?.find((goal) => goal.id === clean.goalId);
+      if (g) {
+        validatedGoalId = g.id;
+        if (clean.milestoneId && typeof clean.milestoneId === 'string') {
+          if (g.milestones?.some((m) => m.id === clean.milestoneId)) {
+            validatedMilestoneId = clean.milestoneId;
+          }
+        }
+      }
+    }
+
     const newTask: TaskItem = {
       id: clean.id && typeof clean.id === 'string' ? clean.id : `task-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       title: String(clean.title || 'New Task').slice(0, 150),
@@ -577,6 +591,8 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
       status: 'todo',
       category: String(clean.category || 'Engineering').slice(0, 50),
       tags: Array.isArray(clean.tags) ? clean.tags.map((t: any) => String(t).slice(0, 30)) : [],
+      goalId: validatedGoalId,
+      milestoneId: validatedMilestoneId,
       xp: typeof clean.xp === 'number' ? Math.max(10, Math.min(300, clean.xp)) : 50,
       completed: false,
       createdAt: typeof clean.createdAt === 'string' ? clean.createdAt : new Date().toISOString(),
@@ -623,6 +639,22 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
       task.completed = clean.completed;
       if (!clean.completed) {
         task.completedAt = undefined;
+      }
+    }
+    if (clean.goalId !== undefined) {
+      if (clean.goalId && typeof clean.goalId === 'string') {
+        const g = state.goals?.find((goal) => goal.id === clean.goalId);
+        if (g) {
+          task.goalId = g.id;
+          if (clean.milestoneId && typeof clean.milestoneId === 'string') {
+            task.milestoneId = g.milestones?.some((m) => m.id === clean.milestoneId) ? clean.milestoneId : undefined;
+          } else {
+            task.milestoneId = undefined;
+          }
+        }
+      } else {
+        task.goalId = undefined;
+        task.milestoneId = undefined;
       }
     }
 

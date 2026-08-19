@@ -174,6 +174,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = () => {
+    Storage.clearAllUserData();
     localStorage.removeItem('lifeos_auth_token');
     localStorage.removeItem('lifeos_demo_mode');
     setIsAuthenticated(false);

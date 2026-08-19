@@ -23,8 +23,7 @@ import { LearningWidget } from './LearningWidget';
 import { TradingWatchlistWidget } from './TradingWatchlistWidget';
 import { AICoachInsightWidget } from './AICoachInsightWidget';
 import { BossRaidQuickCard } from './BossRaidQuickCard';
-import { Phase9QuickCard } from './Phase9QuickCard';
-import { Phase10QuickCard } from './Phase10QuickCard';
+import { CurrentFocus } from './CurrentFocus';
 import { AddTaskModal } from './AddTaskModal';
 
 interface DashboardViewProps {
@@ -55,6 +54,13 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
   useEffect(() => {
     loadData();
   }, []);
+
+  // Compute XP earned today from ledger transactions or completed daily items
+  const todayDateStr = new Date().toISOString().split('T')[0];
+  const xpTransactions = Storage.getXpTransactions();
+  const xpEarnedToday = xpTransactions
+    .filter((tx) => tx.timestamp && tx.timestamp.startsWith(todayDateStr))
+    .reduce((sum, tx) => sum + (tx.amount || 0), 0);
 
   // Map to summaries
   const tasks: TaskSummary[] = rawTasks.map((t) => ({
@@ -151,24 +157,24 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
         <AICoachInsightWidget insight={insight} onNavigate={onNavigate} />
       )}
 
-      {/* 3. Progress Overview Metrics */}
+      {/* 3. Progress Overview Metrics (Live XP & Streaks) */}
       <ProgressOverview
         tasks={tasks}
         habits={habits}
         streakDays={user?.streakDays || 24}
-        xpEarnedToday={145}
+        xpEarnedToday={xpEarnedToday}
       />
 
-      {/* Phase 8: Active Boss Raid Card */}
-      <BossRaidQuickCard onNavigate={onNavigate} />
+      {/* 4. Current Focus: Highest Priority Incomplete Objective */}
+      <CurrentFocus
+        tasks={rawTasks}
+        goals={rawGoals}
+        onToggleTask={handleToggleTask}
+        onNavigate={onNavigate}
+        onAddTaskClick={() => setIsAddTaskOpen(true)}
+      />
 
-      {/* Phase 9: Automations, Syndicate & Biometrics Quick Hub */}
-      <Phase9QuickCard onNavigate={onNavigate} />
-
-      {/* Phase 10: Sovereign Swarm, Quantum Simulator & Legacy Vault Hub */}
-      <Phase10QuickCard onNavigate={onNavigate} />
-
-      {/* 4. Core Execution Grid: Schedule + Habits */}
+      {/* 5. Core Execution Grid: Schedule + Habits */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <ScheduleWidget
           tasks={tasks}
@@ -182,7 +188,7 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
         />
       </div>
 
-      {/* 5. Strategic Grid: Goals + Learning + Trading */}
+      {/* 6. Strategic Grid: Goals + Learning + Trading */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <GoalsWidget goals={goals} onNavigate={onNavigate} />
         <LearningWidget courses={courses} onNavigate={onNavigate} />

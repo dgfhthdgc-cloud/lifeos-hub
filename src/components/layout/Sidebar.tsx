@@ -41,32 +41,62 @@ interface NavItem {
   badge?: string;
 }
 
+interface NavSection {
+  title: string;
+  items: NavItem[];
+}
+
 export function Sidebar({ currentPath, onNavigate }: SidebarProps) {
   const { user, logout } = useAuth();
   const { isInstallable, installApp, isInstalled, platform, setShowIOSInstallGuide } = usePWA();
 
   const canInstall = !isInstalled && (isInstallable || platform === 'ios');
 
-  const navItems: NavItem[] = [
-    { label: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
-    { label: 'Planner', path: '/planner', icon: Calendar },
-    { label: 'Goals', path: '/goals', icon: Target },
-    { label: 'Habits', path: '/habits', icon: Flame },
-    { label: 'Analytics', path: '/analytics', icon: BarChart3 },
-    { label: 'Boss Raids', path: '/bosses', icon: Swords },
-    { label: 'Perk Tree', path: '/perks', icon: Zap },
-    { label: 'Automations', path: '/automations', icon: Sliders, badge: 'AUTO' },
-    { label: 'Syndicate', path: '/syndicate', icon: Crown, badge: 'GUILD' },
-    { label: 'Biometrics & Hub', path: '/integrations', icon: Activity },
-    { label: 'Swarm Command', path: '/swarm', icon: Cpu, badge: 'SWARM' },
-    { label: 'Simulator', path: '/simulator', icon: Compass, badge: 'SIM' },
-    { label: 'Legacy Vault', path: '/vault', icon: ShieldCheck, badge: 'VAULT' },
-    { label: 'Learn', path: '/learn', icon: GraduationCap },
-    { label: 'Languages', path: '/languages', icon: Globe },
-    { label: 'Trading', path: '/trading', icon: TrendingUp },
-    { label: 'AI Assistant', path: '/ai', icon: Sparkles, badge: 'PRO' },
-    { label: 'Progress & XP', path: '/progress', icon: Award },
-    { label: 'Settings', path: '/settings', icon: Settings },
+  const navSections: NavSection[] = [
+    {
+      title: 'Core Execution',
+      items: [
+        { label: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
+        { label: 'Planner', path: '/planner', icon: Calendar },
+        { label: 'Goals', path: '/goals', icon: Target },
+        { label: 'Habits', path: '/habits', icon: Flame },
+      ],
+    },
+    {
+      title: 'Intelligence & Adaptation',
+      items: [
+        { label: 'AI Coach', path: '/ai', icon: Sparkles, badge: 'PRO' },
+        { label: 'Analytics', path: '/analytics', icon: BarChart3 },
+        { label: 'Simulator', path: '/simulator', icon: Compass, badge: 'SIM' },
+        { label: 'Biometrics & Hub', path: '/integrations', icon: Activity },
+      ],
+    },
+    {
+      title: 'Mastery & Skills',
+      items: [
+        { label: 'Learn', path: '/learn', icon: GraduationCap },
+        { label: 'Languages', path: '/languages', icon: Globe },
+        { label: 'Trading', path: '/trading', icon: TrendingUp },
+      ],
+    },
+    {
+      title: 'Progression & RPG',
+      items: [
+        { label: 'Progress & Gamification', path: '/progress', icon: Award },
+        { label: 'Boss Raids', path: '/bosses', icon: Swords },
+        { label: 'Perk Tree', path: '/perks', icon: Zap },
+        { label: 'Syndicate', path: '/syndicate', icon: Crown, badge: 'GUILD' },
+      ],
+    },
+    {
+      title: 'System',
+      items: [
+        { label: 'Automations', path: '/automations', icon: Sliders, badge: 'AUTO' },
+        { label: 'Legacy Vault', path: '/vault', icon: ShieldCheck, badge: 'VAULT' },
+        { label: 'Swarm Command', path: '/swarm', icon: Cpu, badge: 'SWARM' },
+        { label: 'Settings', path: '/settings', icon: Settings },
+      ],
+    },
   ];
 
   const xpPercent = user ? Math.round((user.currentXp / user.nextLevelXp) * 100) : 0;
@@ -107,55 +137,58 @@ export function Sidebar({ currentPath, onNavigate }: SidebarProps) {
       </div>
 
       {/* Navigation List */}
-      <div className="flex-1 overflow-y-auto px-3 py-4 space-y-1 scrollbar-thin">
-        <div className="px-3 pb-2 text-[10px] font-semibold tracking-wider uppercase text-neutral-400 dark:text-neutral-500">
-          Core Systems
-        </div>
+      <div className="flex-1 overflow-y-auto px-3 py-4 space-y-4 scrollbar-thin">
+        {navSections.map((section) => (
+          <div key={section.title} className="space-y-1">
+            <div className="px-3 pb-1 text-[10px] font-semibold tracking-wider uppercase text-neutral-400 dark:text-neutral-500">
+              {section.title}
+            </div>
+            {section.items.map((item) => {
+              const Icon = item.icon;
+              const isActive =
+                currentPath === item.path ||
+                (item.path === '/dashboard' && currentPath === '/') ||
+                (item.path === '/trading' && currentPath.startsWith('/trading'));
 
-        {navItems.map((item) => {
-          const Icon = item.icon;
-          const isActive =
-            currentPath === item.path ||
-            (item.path === '/dashboard' && currentPath === '/') ||
-            (item.path === '/trading' && currentPath.startsWith('/trading'));
-
-          return (
-            <button
-              key={item.path}
-              onClick={() => onNavigate(item.path)}
-              className={cn(
-                'w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition-all group focus:outline-none',
-                isActive
-                  ? 'bg-neutral-900 text-white dark:bg-neutral-800/90 dark:text-white shadow-xs font-semibold'
-                  : 'text-neutral-600 dark:text-neutral-400 hover:bg-neutral-200/60 dark:hover:bg-neutral-900 hover:text-neutral-900 dark:hover:text-neutral-100'
-              )}
-            >
-              <div className="flex items-center gap-2.5">
-                <Icon
+              return (
+                <button
+                  key={item.path}
+                  onClick={() => onNavigate(item.path)}
                   className={cn(
-                    'w-4 h-4 transition-colors',
+                    'w-full flex items-center justify-between px-3 py-1.5 rounded-lg text-xs font-medium transition-all group focus:outline-none',
                     isActive
-                      ? 'text-white dark:text-neutral-100'
-                      : 'text-neutral-400 dark:text-neutral-500 group-hover:text-neutral-700 dark:group-hover:text-neutral-300'
-                  )}
-                />
-                <span>{item.label}</span>
-              </div>
-              {item.badge ? (
-                <span
-                  className={cn(
-                    'text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider',
-                    isActive
-                      ? 'bg-white/20 text-white'
-                      : 'bg-violet-500/10 text-violet-600 dark:text-violet-400 border border-violet-500/20'
+                      ? 'bg-neutral-900 text-white dark:bg-neutral-800/90 dark:text-white shadow-xs font-semibold'
+                      : 'text-neutral-600 dark:text-neutral-400 hover:bg-neutral-200/60 dark:hover:bg-neutral-900 hover:text-neutral-900 dark:hover:text-neutral-100'
                   )}
                 >
-                  {item.badge}
-                </span>
-              ) : null}
-            </button>
-          );
-        })}
+                  <div className="flex items-center gap-2.5">
+                    <Icon
+                      className={cn(
+                        'w-4 h-4 transition-colors',
+                        isActive
+                          ? 'text-white dark:text-neutral-100'
+                          : 'text-neutral-400 dark:text-neutral-500 group-hover:text-neutral-700 dark:group-hover:text-neutral-300'
+                      )}
+                    />
+                    <span>{item.label}</span>
+                  </div>
+                  {item.badge ? (
+                    <span
+                      className={cn(
+                        'text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider',
+                        isActive
+                          ? 'bg-white/20 text-white'
+                          : 'bg-violet-500/10 text-violet-600 dark:text-violet-400 border border-violet-500/20'
+                      )}
+                    >
+                      {item.badge}
+                    </span>
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
+        ))}
 
         {/* Install PWA Button if available */}
         {canInstall && (

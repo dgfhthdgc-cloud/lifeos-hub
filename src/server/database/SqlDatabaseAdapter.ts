@@ -129,6 +129,8 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
         status TEXT NOT NULL DEFAULT 'todo',
         category TEXT NOT NULL DEFAULT 'Engineering',
         tags_json TEXT NOT NULL DEFAULT '[]',
+        goal_id TEXT,
+        milestone_id TEXT,
         xp INTEGER NOT NULL DEFAULT 50,
         completed INTEGER NOT NULL DEFAULT 0,
         completed_at TEXT,
@@ -271,6 +273,27 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
       CREATE INDEX IF NOT EXISTS idx_processed_events_lookup ON processed_events(user_id, client_event_id);
       CREATE INDEX IF NOT EXISTS idx_user_state_metadata_version ON user_state_metadata(user_id, version);
     `);
+
+    // Migration check: ensure tasks table has goal_id and milestone_id
+    try {
+      const colStmt = this.db.prepare('PRAGMA table_info(tasks);');
+      const cols: string[] = [];
+      while (colStmt.step()) {
+        const obj = colStmt.getAsObject();
+        if (obj && typeof obj.name === 'string') {
+          cols.push(obj.name);
+        }
+      }
+      colStmt.free();
+      if (!cols.includes('goal_id')) {
+        this.db.run('ALTER TABLE tasks ADD COLUMN goal_id TEXT;');
+      }
+      if (!cols.includes('milestone_id')) {
+        this.db.run('ALTER TABLE tasks ADD COLUMN milestone_id TEXT;');
+      }
+    } catch {
+      // Ignored if PRAGMA or ALTER fails
+    }
   }
 
   public saveToDisk(): void {
@@ -650,6 +673,8 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
         status: row.status as 'todo' | 'in_progress' | 'completed',
         category: row.category as string,
         tags,
+        goalId: (row.goal_id as string) || undefined,
+        milestoneId: (row.milestone_id as string) || undefined,
         xp: Number(row.xp),
         completed: Boolean(row.completed),
         completedAt: (row.completed_at as string) || undefined,
@@ -950,8 +975,8 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
           this.db!.run(
             `INSERT INTO tasks (
               id, user_id, title, description, due_date, time, end_time,
-              priority, status, category, tags_json, xp, completed, completed_at, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              priority, status, category, tags_json, goal_id, milestone_id, xp, completed, completed_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               String(t?.id || `task-${Date.now()}`),
               userId,
@@ -964,6 +989,8 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
               t?.status === 'completed' ? 'completed' : t?.status === 'in_progress' ? 'in_progress' : 'todo',
               String(t?.category || 'Engineering').slice(0, 50),
               JSON.stringify(Array.isArray(t?.tags) ? t.tags.map((tg: any) => String(tg).slice(0, 30)) : []),
+              t?.goalId ? String(t.goalId).slice(0, 100) : null,
+              t?.milestoneId ? String(t.milestoneId).slice(0, 100) : null,
               typeof t?.xp === 'number' ? Math.max(10, Math.min(300, t.xp)) : 50,
               t?.completed ? 1 : 0,
               t?.completedAt ? String(t.completedAt).slice(0, 30) : null,
@@ -1207,6 +1234,27 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
     const taskId = clean.id && typeof clean.id === 'string' ? clean.id : `task-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const now = new Date().toISOString();
 
+    // Verify goal ownership if goalId is provided
+    let validatedGoalId: string | null = null;
+    let validatedMilestoneId: string | null = null;
+    if (clean.goalId && typeof clean.goalId === 'string') {
+      const goalStmt = this.db!.prepare('SELECT id, milestones_json FROM goals WHERE id = :gid AND user_id = :uid');
+      goalStmt.bind({ ':gid': clean.goalId, ':uid': userId });
+      if (goalStmt.step()) {
+        const grow = goalStmt.getAsObject();
+        validatedGoalId = String(grow.id);
+        if (clean.milestoneId && typeof clean.milestoneId === 'string') {
+          try {
+            const milestones = JSON.parse(grow.milestones_json as string);
+            if (Array.isArray(milestones) && milestones.some((m: any) => m.id === clean.milestoneId)) {
+              validatedMilestoneId = String(clean.milestoneId);
+            }
+          } catch {}
+        }
+      }
+      goalStmt.free();
+    }
+
     const newTask: TaskItem = {
       id: taskId,
       title: String(clean.title || 'New Task').slice(0, 150),
@@ -1218,6 +1266,8 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
       status: 'todo',
       category: String(clean.category || 'Engineering').slice(0, 50),
       tags: Array.isArray(clean.tags) ? clean.tags.map((t: any) => String(t).slice(0, 30)) : [],
+      goalId: validatedGoalId || undefined,
+      milestoneId: validatedMilestoneId || undefined,
       xp: typeof clean.xp === 'number' ? Math.max(10, Math.min(300, clean.xp)) : 50,
       completed: false,
       createdAt: now,
@@ -1228,8 +1278,8 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
       this.db!.run(
         `INSERT INTO tasks (
           id, user_id, title, description, due_date, time, end_time,
-          priority, status, category, tags_json, xp, completed, completed_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          priority, status, category, tags_json, goal_id, milestone_id, xp, completed, completed_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           newTask.id,
           userId,
@@ -1242,6 +1292,8 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
           newTask.status,
           newTask.category,
           JSON.stringify(newTask.tags),
+          newTask.goalId || null,
+          newTask.milestoneId || null,
           newTask.xp,
           0,
           null,
@@ -1312,6 +1364,28 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
       }
       if (typeof clean.category === 'string') {
         this.db!.run('UPDATE tasks SET category = ? WHERE id = ? AND user_id = ?', [clean.category, taskId, userId]);
+      }
+      if (clean.goalId !== undefined) {
+        let validGId: string | null = null;
+        let validMId: string | null = null;
+        if (clean.goalId && typeof clean.goalId === 'string') {
+          const gCheck = this.db!.prepare('SELECT id, milestones_json FROM goals WHERE id = :gid AND user_id = :uid');
+          gCheck.bind({ ':gid': clean.goalId, ':uid': userId });
+          if (gCheck.step()) {
+            const grow = gCheck.getAsObject();
+            validGId = String(grow.id);
+            if (clean.milestoneId && typeof clean.milestoneId === 'string') {
+              try {
+                const milestones = JSON.parse(grow.milestones_json as string);
+                if (Array.isArray(milestones) && milestones.some((m: any) => m.id === clean.milestoneId)) {
+                  validMId = String(clean.milestoneId);
+                }
+              } catch {}
+            }
+          }
+          gCheck.free();
+        }
+        this.db!.run('UPDATE tasks SET goal_id = ?, milestone_id = ? WHERE id = ? AND user_id = ?', [validGId, validMId, taskId, userId]);
       }
 
       this.db!.run(

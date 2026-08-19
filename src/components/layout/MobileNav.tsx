@@ -54,26 +54,51 @@ export function MobileNav({
     { label: 'Trading', path: '/trading', icon: TrendingUp },
   ];
 
-  const allNavItems = [
-    { label: 'Dashboard', path: '/dashboard' as RoutePath, icon: LayoutDashboard },
-    { label: 'Planner', path: '/planner' as RoutePath, icon: Calendar },
-    { label: 'Goals', path: '/goals' as RoutePath, icon: Target },
-    { label: 'Habits', path: '/habits' as RoutePath, icon: Flame },
-    { label: 'Analytics', path: '/analytics' as RoutePath, icon: BarChart3 },
-    { label: 'Boss Raids', path: '/bosses' as RoutePath, icon: Swords },
-    { label: 'Perk Tree', path: '/perks' as RoutePath, icon: Zap },
-    { label: 'Automations', path: '/automations' as RoutePath, icon: Sliders },
-    { label: 'Syndicate', path: '/syndicate' as RoutePath, icon: Crown },
-    { label: 'Biometrics & Hub', path: '/integrations' as RoutePath, icon: Activity },
-    { label: 'Swarm Command', path: '/swarm' as RoutePath, icon: Cpu },
-    { label: 'Quantum Simulator', path: '/simulator' as RoutePath, icon: Compass },
-    { label: 'Legacy Vault', path: '/vault' as RoutePath, icon: ShieldCheck },
-    { label: 'Learn', path: '/learn' as RoutePath, icon: GraduationCap },
-    { label: 'Languages', path: '/languages' as RoutePath, icon: Globe },
-    { label: 'Trading Terminal', path: '/trading' as RoutePath, icon: TrendingUp },
-    { label: 'AI Assistant', path: '/ai' as RoutePath, icon: Sparkles },
-    { label: 'Progress & Gamification', path: '/progress' as RoutePath, icon: Award },
-    { label: 'Settings', path: '/settings' as RoutePath, icon: Settings },
+  const navSections = [
+    {
+      title: 'Core Execution',
+      items: [
+        { label: 'Dashboard', path: '/dashboard' as RoutePath, icon: LayoutDashboard },
+        { label: 'Planner', path: '/planner' as RoutePath, icon: Calendar },
+        { label: 'Goals', path: '/goals' as RoutePath, icon: Target },
+        { label: 'Habits', path: '/habits' as RoutePath, icon: Flame },
+      ],
+    },
+    {
+      title: 'Intelligence & Adaptation',
+      items: [
+        { label: 'AI Coach', path: '/ai' as RoutePath, icon: Sparkles },
+        { label: 'Analytics', path: '/analytics' as RoutePath, icon: BarChart3 },
+        { label: 'Simulator', path: '/simulator' as RoutePath, icon: Compass },
+        { label: 'Biometrics & Hub', path: '/integrations' as RoutePath, icon: Activity },
+      ],
+    },
+    {
+      title: 'Mastery & Skills',
+      items: [
+        { label: 'Learn', path: '/learn' as RoutePath, icon: GraduationCap },
+        { label: 'Languages', path: '/languages' as RoutePath, icon: Globe },
+        { label: 'Trading', path: '/trading' as RoutePath, icon: TrendingUp },
+      ],
+    },
+    {
+      title: 'Progression & RPG',
+      items: [
+        { label: 'Progress & Gamification', path: '/progress' as RoutePath, icon: Award },
+        { label: 'Boss Raids', path: '/bosses' as RoutePath, icon: Swords },
+        { label: 'Perk Tree', path: '/perks' as RoutePath, icon: Zap },
+        { label: 'Syndicate', path: '/syndicate' as RoutePath, icon: Crown },
+      ],
+    },
+    {
+      title: 'System',
+      items: [
+        { label: 'Automations', path: '/automations' as RoutePath, icon: Sliders },
+        { label: 'Legacy Vault', path: '/vault' as RoutePath, icon: ShieldCheck },
+        { label: 'Swarm Command', path: '/swarm' as RoutePath, icon: Cpu },
+        { label: 'Settings', path: '/settings' as RoutePath, icon: Settings },
+      ],
+    },
   ];
 
   const handleInstall = () => {
@@ -167,30 +192,37 @@ export function MobileNav({
             )}
 
             {/* Navigation items */}
-            <div className="flex-1 overflow-y-auto p-3 space-y-1">
-              {allNavItems.map((item) => {
-                const Icon = item.icon;
-                const isActive = currentPath === item.path;
+            <div className="flex-1 overflow-y-auto p-3 space-y-4">
+              {navSections.map((section) => (
+                <div key={section.title} className="space-y-1">
+                  <div className="px-3 pb-1 text-[10px] font-semibold tracking-wider uppercase text-neutral-400 dark:text-neutral-500">
+                    {section.title}
+                  </div>
+                  {section.items.map((item) => {
+                    const Icon = item.icon;
+                    const isActive = currentPath === item.path;
 
-                return (
-                  <button
-                    key={item.path}
-                    onClick={() => {
-                      onNavigate(item.path);
-                      onCloseDrawer();
-                    }}
-                    className={cn(
-                      'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-medium transition-colors text-left',
-                      isActive
-                        ? 'bg-neutral-900 text-white dark:bg-neutral-800 dark:text-white'
-                        : 'text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800'
-                    )}
-                  >
-                    <Icon className="w-4 h-4" />
-                    <span>{item.label}</span>
-                  </button>
-                );
-              })}
+                    return (
+                      <button
+                        key={item.path}
+                        onClick={() => {
+                          onNavigate(item.path);
+                          onCloseDrawer();
+                        }}
+                        className={cn(
+                          'w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-colors text-left',
+                          isActive
+                            ? 'bg-neutral-900 text-white dark:bg-neutral-800 dark:text-white font-semibold'
+                            : 'text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800'
+                        )}
+                      >
+                        <Icon className="w-4 h-4" />
+                        <span>{item.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
             </div>
 
             {/* Footer User Info */}

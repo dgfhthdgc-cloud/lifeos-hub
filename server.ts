@@ -182,7 +182,7 @@ async function startServer() {
   // AUTHENTICATION ROUTES
   // -------------------------------------------------------------
 
-  app.post('/api/auth/signup', authRateLimiter, (req, res) => {
+  app.post('/api/auth/signup', authRateLimiter, async (req, res) => {
     try {
       const { email, password, name } = req.body;
       if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
@@ -198,7 +198,7 @@ async function startServer() {
       }
 
       const { hash, salt } = hashPassword(password);
-      const userRecord = db.createUser(email, hash, salt, typeof name === 'string' ? name : '');
+      const userRecord = await db.createUser(email, hash, salt, typeof name === 'string' ? name : '');
       const token = generateAuthToken({ userId: userRecord.id, email: userRecord.email });
 
       logger.info('AUTH', `New user registered: ${userRecord.email}`, { userId: userRecord.id });
@@ -214,14 +214,14 @@ async function startServer() {
     }
   });
 
-  app.post('/api/auth/login', authRateLimiter, (req, res) => {
+  app.post('/api/auth/login', authRateLimiter, async (req, res) => {
     try {
       const { email, password } = req.body;
       if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
         return res.status(400).json({ error: 'MISSING_FIELDS', message: 'Valid email and password are required.' });
       }
 
-      const userRecord = db.getUserByEmail(email);
+      const userRecord = await db.getUserByEmail(email);
       if (!userRecord) {
         logger.security('AUTH', 'Failed login attempt - unknown user', { emailAttempt: email.slice(0, 3) + '***' });
         return res.status(401).json({ error: 'INVALID_CREDENTIALS', message: 'Invalid email or password.' });
@@ -248,14 +248,14 @@ async function startServer() {
   });
 
   // Password Recovery - Request Reset (Protected against account enumeration)
-  app.post('/api/auth/forgot-password', authRateLimiter, (req, res) => {
+  app.post('/api/auth/forgot-password', authRateLimiter, async (req, res) => {
     try {
       const { email } = req.body;
       if (!email || typeof email !== 'string') {
         return res.status(400).json({ error: 'MISSING_EMAIL', message: 'Email address is required.' });
       }
 
-      const user = db.getUserByEmail(email);
+      const user = await db.getUserByEmail(email);
       if (user) {
         const resetToken = generatePasswordResetToken(user.id, user.email, user.passwordHash);
         logger.info('AUTH', `Password reset token generated for user ${user.id}`);
@@ -276,7 +276,7 @@ async function startServer() {
   });
 
   // Password Recovery - Submit New Password
-  app.post('/api/auth/reset-password', authRateLimiter, (req, res) => {
+  app.post('/api/auth/reset-password', authRateLimiter, async (req, res) => {
     try {
       const { token, newPassword } = req.body;
       if (!token || !newPassword || typeof token !== 'string' || typeof newPassword !== 'string') {
@@ -300,7 +300,7 @@ async function startServer() {
         return res.status(400).json({ error: 'INVALID_TOKEN', message: 'Invalid or expired password reset token.' });
       }
 
-      const user = db.getUserById(parsedPayload.userId);
+      const user = await db.getUserById(parsedPayload.userId);
       if (!user) {
         return res.status(400).json({ error: 'INVALID_TOKEN', message: 'Invalid or expired password reset token.' });
       }
@@ -311,7 +311,7 @@ async function startServer() {
       }
 
       const { hash, salt } = hashPassword(newPassword);
-      db.updateUserPassword(user.id, hash, salt);
+      await db.updateUserPassword(user.id, hash, salt);
       logger.security('AUTH', `Password reset successful for user ${user.id}`);
 
       res.json({
@@ -323,9 +323,9 @@ async function startServer() {
     }
   });
 
-  app.get('/api/auth/me', requireAuth, (req, res) => {
+  app.get('/api/auth/me', requireAuth, async (req, res) => {
     try {
-      const user = db.getUserById(req.user!.userId);
+      const user = await db.getUserById(req.user!.userId);
       if (!user) {
         return res.status(404).json({ error: 'NOT_FOUND', message: 'User record not found.' });
       }
@@ -335,12 +335,12 @@ async function startServer() {
     }
   });
 
-  app.patch('/api/auth/profile', requireAuth, (req, res) => {
+  app.patch('/api/auth/profile', requireAuth, async (req, res) => {
     try {
       if (!req.body || typeof req.body !== 'object') {
         return res.status(400).json({ error: 'INVALID_PAYLOAD', message: 'Invalid profile update payload.' });
       }
-      const updated = db.updateUserProfile(req.user!.userId, req.body);
+      const updated = await db.updateUserProfile(req.user!.userId, req.body);
       res.json({ success: true, user: updated });
     } catch (err: any) {
       res.status(400).json({ error: 'UPDATE_PROFILE_FAILED', message: err?.message || 'Profile update failed.' });
@@ -351,21 +351,21 @@ async function startServer() {
   // CLOUD PERSISTENCE & STATE SYNC (WITH CONCURRENCY REVISIONS)
   // -------------------------------------------------------------
 
-  app.get('/api/data/state', requireAuth, (req, res) => {
+  app.get('/api/data/state', requireAuth, async (req, res) => {
     try {
-      const state = db.getUserState(req.user!.userId);
+      const state = await db.getUserState(req.user!.userId);
       res.json({ success: true, version: state.version, state });
     } catch {
       res.status(500).json({ error: 'GET_STATE_FAILED', message: 'Failed to retrieve state.' });
     }
   });
 
-  app.post('/api/data/sync', requireAuth, (req, res) => {
+  app.post('/api/data/sync', requireAuth, async (req, res) => {
     try {
       if (!req.body || typeof req.body !== 'object') {
         return res.status(400).json({ error: 'INVALID_PAYLOAD', message: 'Invalid sync payload.' });
       }
-      const syncResult = db.syncUserState(req.user!.userId, req.body);
+      const syncResult = await db.syncUserState(req.user!.userId, req.body);
 
       if (syncResult.conflict) {
         logger.warn('SYNC', `State conflict detected for user ${req.user!.userId}`, {
@@ -392,7 +392,7 @@ async function startServer() {
   // -------------------------------------------------------------
 
   // Tasks
-  const handleTaskComplete = (req: any, res: any) => {
+  const handleTaskComplete = async (req: any, res: any) => {
     try {
       const taskId = req.params.id || req.body.taskId;
       const clientEventId = req.body.clientEventId || req.headers['x-client-event-id'] || undefined;
@@ -401,7 +401,7 @@ async function startServer() {
       if (!taskId || typeof taskId !== 'string') {
         return res.status(400).json({ error: 'INVALID_TASK_ID', message: 'taskId is required.' });
       }
-      const result = db.completeTask(req.user!.userId, taskId, clientEventId, baseVersion);
+      const result = await db.completeTask(req.user!.userId, taskId, clientEventId, baseVersion);
       if (!result.success) {
         return res.status(404).json({ error: result.error || 'TASK_NOT_FOUND', message: 'Task not found.' });
       }
@@ -414,7 +414,7 @@ async function startServer() {
   app.post('/api/domain/tasks/complete', requireAuth, handleTaskComplete);
   app.post('/api/domain/tasks/:id/complete', requireAuth, handleTaskComplete);
 
-  app.post('/api/domain/tasks/create', requireAuth, (req, res) => {
+  app.post('/api/domain/tasks/create', requireAuth, async (req, res) => {
     try {
       if (!req.body || typeof req.body !== 'object') {
         return res.status(400).json({ error: 'INVALID_PAYLOAD', message: 'Task payload is required.' });
@@ -422,14 +422,14 @@ async function startServer() {
       const clientEventId = req.body.clientEventId || req.headers['x-client-event-id'] || undefined;
       const baseVersion = typeof req.body.baseVersion === 'number' ? req.body.baseVersion : undefined;
       const taskData = req.body.task || req.body;
-      const result = db.createTask(req.user!.userId, taskData, clientEventId, baseVersion);
+      const result = await db.createTask(req.user!.userId, taskData, clientEventId, baseVersion);
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: 'TASK_CREATE_FAILED', message: err?.message });
     }
   });
 
-  const handleTaskUpdate = (req: any, res: any) => {
+  const handleTaskUpdate = async (req: any, res: any) => {
     try {
       const taskId = req.params.id || req.body.taskId;
       const updates = req.body.updates || req.body;
@@ -439,7 +439,7 @@ async function startServer() {
       if (!taskId || typeof taskId !== 'string' || !updates || typeof updates !== 'object') {
         return res.status(400).json({ error: 'INVALID_PAYLOAD', message: 'taskId and updates are required.' });
       }
-      const result = db.updateTask(req.user!.userId, taskId, updates, clientEventId, baseVersion);
+      const result = await db.updateTask(req.user!.userId, taskId, updates, clientEventId, baseVersion);
       if (!result.success) {
         return res.status(404).json({ error: result.error || 'TASK_NOT_FOUND', message: 'Task not found.' });
       }
@@ -453,7 +453,7 @@ async function startServer() {
   app.post('/api/domain/tasks/:id/update', requireAuth, handleTaskUpdate);
   app.patch('/api/domain/tasks/:id', requireAuth, handleTaskUpdate);
 
-  const handleTaskDelete = (req: any, res: any) => {
+  const handleTaskDelete = async (req: any, res: any) => {
     try {
       const taskId = req.params.id || req.body.taskId;
       const clientEventId = req.body.clientEventId || req.headers['x-client-event-id'] || undefined;
@@ -462,7 +462,7 @@ async function startServer() {
       if (!taskId || typeof taskId !== 'string') {
         return res.status(400).json({ error: 'INVALID_TASK_ID', message: 'taskId is required.' });
       }
-      const result = db.deleteTask(req.user!.userId, taskId, clientEventId, baseVersion);
+      const result = await db.deleteTask(req.user!.userId, taskId, clientEventId, baseVersion);
       if (!result.success) {
         return res.status(404).json({ error: result.error || 'TASK_NOT_FOUND', message: 'Task not found.' });
       }
@@ -477,7 +477,7 @@ async function startServer() {
   app.delete('/api/domain/tasks/:id', requireAuth, handleTaskDelete);
 
   // Habits
-  const handleHabitComplete = (req: any, res: any) => {
+  const handleHabitComplete = async (req: any, res: any) => {
     try {
       const habitId = req.params.id || req.body.habitId;
       const { date } = req.body;
@@ -487,7 +487,7 @@ async function startServer() {
       if (!habitId || typeof habitId !== 'string') {
         return res.status(400).json({ error: 'INVALID_HABIT_ID', message: 'habitId is required.' });
       }
-      const result = db.completeHabit(req.user!.userId, habitId, typeof date === 'string' ? date : undefined, clientEventId, baseVersion);
+      const result = await db.completeHabit(req.user!.userId, habitId, typeof date === 'string' ? date : undefined, clientEventId, baseVersion);
       if (!result.success) {
         return res.status(404).json({ error: result.error || 'HABIT_NOT_FOUND', message: 'Habit not found.' });
       }
@@ -500,7 +500,7 @@ async function startServer() {
   app.post('/api/domain/habits/complete', requireAuth, handleHabitComplete);
   app.post('/api/domain/habits/:id/complete', requireAuth, handleHabitComplete);
 
-  app.post('/api/domain/habits/create', requireAuth, (req, res) => {
+  app.post('/api/domain/habits/create', requireAuth, async (req, res) => {
     try {
       if (!req.body || typeof req.body !== 'object') {
         return res.status(400).json({ error: 'INVALID_PAYLOAD', message: 'Habit payload is required.' });
@@ -508,14 +508,14 @@ async function startServer() {
       const clientEventId = req.body.clientEventId || req.headers['x-client-event-id'] || undefined;
       const baseVersion = typeof req.body.baseVersion === 'number' ? req.body.baseVersion : undefined;
       const habitData = req.body.habit || req.body;
-      const result = db.createHabit(req.user!.userId, habitData, clientEventId, baseVersion);
+      const result = await db.createHabit(req.user!.userId, habitData, clientEventId, baseVersion);
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: 'HABIT_CREATE_FAILED', message: err?.message });
     }
   });
 
-  const handleHabitUpdate = (req: any, res: any) => {
+  const handleHabitUpdate = async (req: any, res: any) => {
     try {
       const habitId = req.params.id || req.body.habitId;
       const updates = req.body.updates || req.body;
@@ -525,7 +525,7 @@ async function startServer() {
       if (!habitId || typeof habitId !== 'string' || !updates || typeof updates !== 'object') {
         return res.status(400).json({ error: 'INVALID_PAYLOAD', message: 'habitId and updates are required.' });
       }
-      const result = db.updateHabit(req.user!.userId, habitId, updates, clientEventId, baseVersion);
+      const result = await db.updateHabit(req.user!.userId, habitId, updates, clientEventId, baseVersion);
       if (!result.success) {
         return res.status(404).json({ error: result.error || 'HABIT_NOT_FOUND', message: 'Habit not found.' });
       }
@@ -539,7 +539,7 @@ async function startServer() {
   app.post('/api/domain/habits/:id/update', requireAuth, handleHabitUpdate);
   app.patch('/api/domain/habits/:id', requireAuth, handleHabitUpdate);
 
-  const handleHabitDelete = (req: any, res: any) => {
+  const handleHabitDelete = async (req: any, res: any) => {
     try {
       const habitId = req.params.id || req.body.habitId;
       const clientEventId = req.body.clientEventId || req.headers['x-client-event-id'] || undefined;
@@ -548,7 +548,7 @@ async function startServer() {
       if (!habitId || typeof habitId !== 'string') {
         return res.status(400).json({ error: 'INVALID_HABIT_ID', message: 'habitId is required.' });
       }
-      const result = db.deleteHabit(req.user!.userId, habitId, clientEventId, baseVersion);
+      const result = await db.deleteHabit(req.user!.userId, habitId, clientEventId, baseVersion);
       if (!result.success) {
         return res.status(404).json({ error: result.error || 'HABIT_NOT_FOUND', message: 'Habit not found.' });
       }
@@ -563,7 +563,7 @@ async function startServer() {
   app.delete('/api/domain/habits/:id', requireAuth, handleHabitDelete);
 
   // Goals
-  app.post('/api/domain/goals/progress', requireAuth, (req, res) => {
+  app.post('/api/domain/goals/progress', requireAuth, async (req, res) => {
     try {
       const { goalId, progress, milestoneId } = req.body;
       const clientEventId = req.body.clientEventId || req.headers['x-client-event-id'] || undefined;
@@ -572,7 +572,7 @@ async function startServer() {
       if (!goalId || typeof goalId !== 'string' || typeof progress !== 'number') {
         return res.status(400).json({ error: 'INVALID_PAYLOAD', message: 'goalId and numeric progress are required.' });
       }
-      const result = db.updateGoalProgress(
+      const result = await db.updateGoalProgress(
         req.user!.userId,
         goalId,
         progress,
@@ -593,7 +593,7 @@ async function startServer() {
   // GAMIFICATION & AUTHORITATIVE XP LEDGER (DEPRECATED CLIENT FALLBACK)
   // -------------------------------------------------------------
 
-  app.post('/api/gamification/award-xp', requireAuth, xpRateLimiter, (req, res) => {
+  app.post('/api/gamification/award-xp', requireAuth, xpRateLimiter, async (req, res) => {
     try {
       const { amount, reason, category, clientEventId } = req.body;
       if (typeof amount !== 'number' || !Number.isInteger(amount) || amount <= 0 || amount > 500) {
@@ -605,7 +605,7 @@ async function startServer() {
 
       const safeReason = typeof reason === 'string' ? reason.slice(0, 100) : 'Activity completed';
       const eventId = clientEventId || req.headers['x-client-event-id'] || undefined;
-      const result = db.recordXpTransaction(req.user!.userId, amount, safeReason, category, eventId);
+      const result = await db.recordXpTransaction(req.user!.userId, amount, safeReason, category, eventId);
 
       res.json({
         success: true,
@@ -632,7 +632,7 @@ async function startServer() {
         return res.status(400).json({ error: 'MESSAGE_TOO_LONG', message: 'Message cannot exceed 2000 characters.' });
       }
 
-      const userState = db.getUserState(req.user!.userId);
+      const userState = await db.getUserState(req.user!.userId);
       const aiResult = await generateAICoachResponse({
         userState,
         userMessage: message.trim(),
@@ -640,7 +640,7 @@ async function startServer() {
       });
 
       // Persist in user's AI conversation history
-      db.addAiMessage(req.user!.userId, {
+      await db.addAiMessage(req.user!.userId, {
         id: `msg-${Date.now()}-user`,
         role: 'user',
         content: message.trim(),
@@ -655,7 +655,7 @@ async function startServer() {
         modelUsed: aiResult.modelUsed,
       };
 
-      db.addAiMessage(req.user!.userId, assistantMsg);
+      await db.addAiMessage(req.user!.userId, assistantMsg);
 
       res.json({
         success: true,
@@ -670,7 +670,7 @@ async function startServer() {
   app.post('/api/ai/analyze-trading', requireAuth, aiRateLimiter, async (req, res) => {
     try {
       const { journalHistory, currentSymbol, marketContext, question } = req.body;
-      const userState = db.getUserState(req.user!.userId);
+      const userState = await db.getUserState(req.user!.userId);
       const userJournal = userState.journal || [];
 
       // Validate and sanitize inputs
@@ -755,10 +755,10 @@ ${sanitizedQuestion}
   });
 
   // Readiness probe (checks database readiness and configuration status)
-  app.get('/api/ready', (_req, res) => {
+  app.get('/api/ready', async (_req, res) => {
     try {
-      const isDbReady = typeof db.isReady === 'function' ? db.isReady() : true;
-      const stats = typeof db.getStats === 'function' ? db.getStats() : { userCount: 0, adapter: 'unknown' };
+      const isDbReady = typeof db.isReady === 'function' ? await db.isReady() : true;
+      const stats = typeof db.getStats === 'function' ? await db.getStats() : { userCount: 0, adapter: 'unknown' };
 
       if (!isDbReady) {
         return res.status(503).json({

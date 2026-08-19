@@ -85,6 +85,7 @@ export interface TaskItem {
   tags: string[];
   recurrence?: 'none' | 'daily' | 'weekdays' | 'weekly';
   goalId?: string;
+  milestoneId?: string;
   habitId?: string;
   xp: number;
   completed: boolean;
@@ -95,12 +96,18 @@ export interface TaskItem {
 export interface TaskSummary {
   id: string;
   title: string;
+  description?: string;
   time?: string;
   dueTime?: string;
   priority: 'low' | 'medium' | 'high';
   completed: boolean;
   category: string;
   xp: number;
+  goalId?: string;
+  milestoneId?: string;
+  goalTitle?: string;
+  milestoneTitle?: string;
+  estimatedMinutes?: number;
 }
 
 export interface GoalMilestone {
