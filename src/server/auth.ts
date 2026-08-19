@@ -4,6 +4,11 @@ import { AuthTokenPayload } from './types';
 let cachedSecret: string | null = null;
 let devSecretWarningLogged = false;
 
+export function resetAuthSecretCacheForTesting(): void {
+  cachedSecret = null;
+  devSecretWarningLogged = false;
+}
+
 export function getAuthSecret(): string {
   if (cachedSecret) return cachedSecret;
 

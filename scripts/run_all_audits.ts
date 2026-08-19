@@ -11,6 +11,7 @@ const testSuites = [
   { name: 'Phase 8 Launch & Observability', cmd: 'npx tsx -e "import(\'./src/server/tests/phase8_launch_observability\').then(m => m.runPhase8LaunchObservability())"' },
   { name: 'Post-Phase 8 Disaster Recovery Audit', cmd: 'npx tsx -e "import(\'./src/server/tests/post_phase8_launch_audit\').then(m => m.runPostPhase8Audit())"' },
   { name: 'Pre-Canary Zero-Trust Security & Hardening Audit', cmd: 'npx tsx src/server/tests/pre_canary_hardening_audit.ts' },
+  { name: 'Final Zero-Trust Canary Gate Audit', cmd: 'npx tsx scripts/final_canary_gate_audit.ts' },
 ];
 
 let totalPassed = 0;
