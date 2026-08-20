@@ -14,6 +14,7 @@ import {
   UnifiedActivityEvent,
 } from '../../types';
 import { Storage } from '../../lib/storage';
+import { syncManager } from '../../lib/SyncManager';
 import { useAuth } from '../../context/AuthContext';
 import { useNotifications } from '../../context/NotificationContext';
 import { NextBestActionEngine } from '../../lib/nextBestAction';
@@ -36,7 +37,7 @@ interface DashboardViewProps {
 }
 
 export function DashboardView({ onNavigate }: DashboardViewProps) {
-  const { user, addXp } = useAuth();
+  const { user, addXp, isAuthenticated, isDemoMode, setAuthoritativeUser } = useAuth();
   const { showToast } = useNotifications();
 
   const [rawTasks, setRawTasks] = useState<TaskItem[]>([]);
@@ -103,7 +104,70 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
     targetDate: g.deadline || g.quarter || 'Q3 2026',
   }));
 
-  const handleToggleTask = (taskId: string) => {
+  const handleToggleTask = async (taskId: string) => {
+    if (isAuthenticated && !isDemoMode) {
+      const prevTasks = Storage.getTasks();
+      const targetTask = prevTasks.find((t) => t.id === taskId);
+      if (!targetTask) return;
+
+      if (targetTask.completed) {
+        const updated = prevTasks.map((t) =>
+          t.id === taskId ? { ...t, completed: false, status: 'todo' as const } : t
+        );
+        Storage.setTasks(updated);
+        loadData();
+        syncManager.updateTask(taskId, { completed: false, status: 'todo' }).catch(() => {});
+        return;
+      }
+
+      // Optimistic completion update
+      const optimisticTasks = prevTasks.map((t) =>
+        t.id === taskId ? { ...t, completed: true, status: 'completed' as const } : t
+      );
+      Storage.setTasks(optimisticTasks);
+      loadData();
+
+      try {
+        const result = await syncManager.completeTask(taskId);
+        if (result.success) {
+          if (result.task) {
+            const finalTasks = prevTasks.map((t) => (t.id === taskId ? result.task! : t));
+            Storage.setTasks(finalTasks);
+          }
+          if (result.profile) {
+            setAuthoritativeUser(result.profile);
+          }
+          loadData();
+
+          const xpGained = result.xpTransaction?.amount || result.task?.xp || targetTask.xp || 25;
+          showToast({
+            title: 'Task Completed!',
+            description: `${result.task?.title || targetTask.title} • +${xpGained} XP awarded`,
+            type: 'xp',
+            xpAmount: xpGained,
+          });
+        } else {
+          Storage.setTasks(prevTasks);
+          loadData();
+          showToast({
+            title: 'Task Update Failed',
+            description: result.error || 'Failed to complete task on server.',
+            type: 'system',
+          });
+        }
+      } catch {
+        Storage.setTasks(prevTasks);
+        loadData();
+        showToast({
+          title: 'Task Update Failed',
+          description: 'Network error completing task.',
+          type: 'system',
+        });
+      }
+      return;
+    }
+
+    // Demo / Guest mode
     const { task, xpAwarded } = Storage.toggleTask(taskId);
     loadData();
 
@@ -118,7 +182,81 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
     }
   };
 
-  const handleToggleHabit = (habitId: string) => {
+  const handleToggleHabit = async (habitId: string) => {
+    if (isAuthenticated && !isDemoMode) {
+      const prevHabits = Storage.getHabits();
+      const targetHabit = prevHabits.find((h) => h.id === habitId);
+      if (!targetHabit) return;
+
+      const todayStr = new Date().toISOString().split('T')[0];
+      const alreadyLoggedToday = targetHabit.history?.includes(todayStr) || targetHabit.completedToday;
+      if (alreadyLoggedToday) {
+        showToast({
+          title: 'Habit Already Logged',
+          description: `${targetHabit.name} is already logged for today.`,
+          type: 'system',
+        });
+        return;
+      }
+
+      // Optimistic completion update
+      const updatedHistory = [...(targetHabit.history || []), todayStr];
+      const newStreak = (targetHabit.currentStreak || 0) + 1;
+      const optimisticHabits = prevHabits.map((h) =>
+        h.id === habitId
+          ? {
+              ...h,
+              completedToday: true,
+              currentStreak: newStreak,
+              bestStreak: Math.max(h.bestStreak || 0, newStreak),
+              history: updatedHistory,
+            }
+          : h
+      );
+      Storage.setHabits(optimisticHabits);
+      loadData();
+
+      try {
+        const result = await syncManager.completeHabit(habitId, todayStr);
+        if (result.success) {
+          if (result.habit) {
+            const finalHabits = prevHabits.map((h) => (h.id === habitId ? result.habit! : h));
+            Storage.setHabits(finalHabits);
+          }
+          if (result.profile) {
+            setAuthoritativeUser(result.profile);
+          }
+          loadData();
+
+          const xpGained = result.xpTransaction?.amount || result.habit?.xp || targetHabit.xp || 35;
+          showToast({
+            title: `Habit Checked: ${result.habit?.name || targetHabit.name}! 🔥`,
+            description: `${result.habit?.currentStreak ?? newStreak} day streak maintained. +${xpGained} XP awarded`,
+            type: 'xp',
+            xpAmount: xpGained,
+          });
+        } else {
+          Storage.setHabits(prevHabits);
+          loadData();
+          showToast({
+            title: 'Habit Update Failed',
+            description: result.error || 'Failed to complete habit on server.',
+            type: 'system',
+          });
+        }
+      } catch {
+        Storage.setHabits(prevHabits);
+        loadData();
+        showToast({
+          title: 'Habit Update Failed',
+          description: 'Network error completing habit.',
+          type: 'system',
+        });
+      }
+      return;
+    }
+
+    // Demo / Guest mode
     const { habit, xpAwarded } = Storage.toggleHabitDay(habitId);
     loadData();
 
@@ -143,8 +281,8 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
     }
   };
 
-  const handleAddTask = (newTaskData: Omit<TaskSummary, 'id' | 'completed'>) => {
-    Storage.createTask({
+  const handleAddTask = async (newTaskData: Omit<TaskSummary, 'id' | 'completed'>) => {
+    const taskPayload: Omit<TaskItem, 'id'> = {
       title: newTaskData.title,
       dueDate: new Date().toISOString().split('T')[0],
       time: newTaskData.time || '09:00 AM',
@@ -154,6 +292,41 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
       tags: ['#today'],
       xp: newTaskData.xp || 25,
       completed: false,
+      createdAt: new Date().toISOString(),
+    };
+
+    if (isAuthenticated && !isDemoMode) {
+      try {
+        const res = await syncManager.createTask(taskPayload);
+        if (res.success && res.task) {
+          const currentTasks = Storage.getTasks();
+          Storage.setTasks([res.task, ...currentTasks]);
+          loadData();
+          showToast({
+            title: 'Task Scheduled',
+            description: `${newTaskData.title} added to execution plan.`,
+            type: 'success',
+          });
+        } else {
+          showToast({
+            title: 'Task Creation Failed',
+            description: res.error || 'Could not schedule task on server.',
+            type: 'system',
+          });
+        }
+      } catch {
+        showToast({
+          title: 'Task Creation Failed',
+          description: 'Network error scheduling task.',
+          type: 'system',
+        });
+      }
+      return;
+    }
+
+    // Demo mode
+    Storage.createTask({
+      ...taskPayload,
     });
     loadData();
     showToast({

@@ -128,7 +128,7 @@ export function GoalsView({ onNavigate = () => {} }: GoalsViewProps) {
     }
   };
 
-  const handleCreateGoal = (e: React.FormEvent) => {
+  const handleCreateGoal = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim()) return;
 
@@ -154,6 +154,18 @@ export function GoalsView({ onNavigate = () => {} }: GoalsViewProps) {
     const updated = [newGoal, ...goals];
     Storage.setGoals(updated);
     setGoals(updated);
+
+    if (isAuthenticated && !isDemoMode) {
+      syncManager.syncOperations([
+        {
+          operationId: `op_${Date.now()}`,
+          type: 'UPDATE_GOAL_PROGRESS',
+          entityId: goalId,
+          payload: { goalId, progress: 0 },
+        },
+      ]).catch(() => {});
+    }
+
     setShowAddGoalModal(false);
     setNewTitle('');
     setNewDescription('');

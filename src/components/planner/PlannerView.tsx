@@ -103,12 +103,30 @@ export function PlannerView() {
     }
   };
 
-  const handleDeleteTask = (id: string) => {
+  const handleDeleteTask = async (id: string) => {
     if (isAuthenticated && !isDemoMode) {
-      syncManager.deleteTask(id).catch(() => {});
+      const prevTasks = tasks;
+      const updated = tasks.filter((t) => t.id !== id);
+      setTasks(updated);
+      Storage.setTasks(updated);
+      try {
+        const res = await syncManager.deleteTask(id);
+        if (!res.success) {
+          setTasks(prevTasks);
+          Storage.setTasks(prevTasks);
+          showToast(res.error || 'Failed to delete task', 'error');
+          return;
+        }
+      } catch {
+        setTasks(prevTasks);
+        Storage.setTasks(prevTasks);
+        showToast('Network error deleting task', 'error');
+        return;
+      }
+    } else {
+      Storage.deleteTask(id);
+      setTasks(Storage.getTasks());
     }
-    Storage.deleteTask(id);
-    setTasks(Storage.getTasks());
     showToast('Task removed', 'info');
   };
 
