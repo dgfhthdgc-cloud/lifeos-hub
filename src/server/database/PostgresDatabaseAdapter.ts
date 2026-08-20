@@ -297,6 +297,45 @@ export class PostgresDatabaseAdapter implements DatabaseAdapter {
         ALTER TABLE tasks ADD COLUMN IF NOT EXISTS milestone_id VARCHAR(100);
         ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'user';
         ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 1;
+
+        DO $$
+        BEGIN
+          -- Fix automations primary key if created with single-column id PK previously
+          IF EXISTS (
+            SELECT 1 FROM information_schema.table_constraints 
+            WHERE table_name = 'automations' AND constraint_type = 'PRIMARY KEY' AND constraint_name = 'automations_pkey'
+          ) THEN
+            ALTER TABLE automations DROP CONSTRAINT automations_pkey;
+            ALTER TABLE automations ADD CONSTRAINT automations_pkey PRIMARY KEY (id, user_id);
+          END IF;
+
+          -- Fix boss_raids primary key if created with single-column id PK previously
+          IF EXISTS (
+            SELECT 1 FROM information_schema.table_constraints 
+            WHERE table_name = 'boss_raids' AND constraint_type = 'PRIMARY KEY' AND constraint_name = 'boss_raids_pkey'
+          ) THEN
+            ALTER TABLE boss_raids DROP CONSTRAINT boss_raids_pkey;
+            ALTER TABLE boss_raids ADD CONSTRAINT boss_raids_pkey PRIMARY KEY (id, user_id);
+          END IF;
+
+          -- Fix perks primary key if created with single-column id PK previously
+          IF EXISTS (
+            SELECT 1 FROM information_schema.table_constraints 
+            WHERE table_name = 'perks' AND constraint_type = 'PRIMARY KEY' AND constraint_name = 'perks_pkey'
+          ) THEN
+            ALTER TABLE perks DROP CONSTRAINT perks_pkey;
+            ALTER TABLE perks ADD CONSTRAINT perks_pkey PRIMARY KEY (id, user_id);
+          END IF;
+
+          -- Fix automation_logs primary key if created with single-column id PK previously
+          IF EXISTS (
+            SELECT 1 FROM information_schema.table_constraints 
+            WHERE table_name = 'automation_logs' AND constraint_type = 'PRIMARY KEY' AND constraint_name = 'automation_logs_pkey'
+          ) THEN
+            ALTER TABLE automation_logs DROP CONSTRAINT automation_logs_pkey;
+            ALTER TABLE automation_logs ADD CONSTRAINT automation_logs_pkey PRIMARY KEY (id, user_id);
+          END IF;
+        END $$;
       `);
       this.isInitialized = true;
     } finally {

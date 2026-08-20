@@ -853,7 +853,7 @@ ${sanitizedQuestion}
     });
   });
 
-  // Readiness probe (public health check - minimal operational status without leaking internals)
+  // Readiness probe (public health check - database readiness status)
   app.get('/api/ready', async (_req, res) => {
     try {
       const isDbReady = typeof db.isReady === 'function' ? await db.isReady() : true;
@@ -861,18 +861,21 @@ ${sanitizedQuestion}
       if (!isDbReady) {
         return res.status(503).json({
           status: 'error',
+          database: { ready: false },
           message: 'Database is initializing or not ready to accept queries.',
         });
       }
 
       res.json({
         status: 'ready',
+        database: { ready: true },
         uptime: process.uptime(),
         timestamp: Date.now(),
       });
     } catch (err: any) {
       res.status(503).json({
         status: 'error',
+        database: { ready: false },
         message: 'Readiness probe failed',
         error: err?.message,
       });
