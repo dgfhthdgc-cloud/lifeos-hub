@@ -1395,7 +1395,7 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
     try {
       const completedAt = new Date().toISOString();
       this.db!.run(
-        'UPDATE tasks SET completed = 1, status = "completed", completed_at = ? WHERE id = ? AND user_id = ?',
+        "UPDATE tasks SET completed = 1, status = 'completed', completed_at = ? WHERE id = ? AND user_id = ?",
         [completedAt, taskId, userId]
       );
 
@@ -2028,7 +2028,7 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
       const milestone = milestones.find((m) => m.id === milestoneId);
       if (milestone && !milestone.completed) {
         milestone.completed = true;
-        totalXpAwarded += milestone.xpReward || 150;
+        totalXpAwarded += milestone.xpReward || milestone.xp || 150;
         rewardReason = `Completed Goal Milestone: ${milestone.title}`;
       }
     }
