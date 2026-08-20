@@ -1144,12 +1144,21 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
             break;
         }
 
-        appliedCount++;
-        operationResults.push({
-          operationId: op.operationId,
-          success: true,
-          result: opResult,
-        });
+        if (opResult && typeof opResult === 'object' && opResult.success === false) {
+          rejectedCount++;
+          operationResults.push({
+            operationId: op.operationId,
+            success: false,
+            error: opResult.error || 'Operation rejected',
+          });
+        } else {
+          appliedCount++;
+          operationResults.push({
+            operationId: op.operationId,
+            success: true,
+            result: opResult,
+          });
+        }
       } catch (err: any) {
         rejectedCount++;
         operationResults.push({

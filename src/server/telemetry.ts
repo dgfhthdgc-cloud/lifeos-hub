@@ -264,6 +264,10 @@ class ServerTelemetryManager {
     return [...this.feedbackEntries];
   }
 
+  public getRecentEvents(limit: number = 50): TelemetryEvent[] {
+    return this.events.slice(-limit);
+  }
+
   public getMetrics(): TelemetryAggregateMetrics {
     const uptimeSeconds = Math.floor((Date.now() - this.startTime) / 1000);
     const totalRequests = this.latencies.length;

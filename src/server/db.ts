@@ -103,6 +103,10 @@ export function getActiveDatabase(): DatabaseAdapter {
   return activeDb;
 }
 
+export function setActiveDatabase(newDb: DatabaseAdapter): void {
+  activeDb = newDb;
+}
+
 // Proxy wrapper so synchronous route calls resolve to activeDb dynamically
 export const db: DatabaseAdapter = new Proxy({} as DatabaseAdapter, {
   get(_target, prop) {

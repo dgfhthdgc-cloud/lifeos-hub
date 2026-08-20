@@ -93,21 +93,7 @@ function createRateLimiter(config: RateLimitConfig) {
   };
 }
 
-async function startServer() {
-  // Validate production configuration and environment parameters
-  const appConfig = validateEnvironment();
-  logger.info('SYSTEM', 'Environment configuration validated successfully.', {
-    nodeEnv: appConfig.nodeEnv,
-    isPostgres: appConfig.isPostgres,
-    requirePostgres: appConfig.requirePostgres,
-  });
-
-  // Initialize durable database and run data migrations
-  await initDatabase();
-
-  // Validate authentication secret immediately on startup
-  validateAuthSecretOnStartup();
-
+export async function createApp(options: { skipVite?: boolean } = {}): Promise<express.Application> {
   const app = express();
   const PORT = 3000;
 
@@ -495,6 +481,7 @@ async function startServer() {
         });
         return res.status(409).json({
           error: 'STATE_CONFLICT',
+          conflict: true,
           message: 'Server possesses a newer revision of state. Conflict resolution required.',
           serverVersion: opResult.serverVersion,
           clientVersion: opResult.clientVersion,
@@ -1253,19 +1240,41 @@ ${sanitizedQuestion}
   // -------------------------------------------------------------
   // VITE MIDDLEWARE / STATIC ASSETS
   // -------------------------------------------------------------
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+  if (!options.skipVite) {
+    if (process.env.NODE_ENV !== 'production') {
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    } else {
+      const distPath = path.join(process.cwd(), 'dist');
+      app.use(express.static(distPath));
+      app.get('*', (_req, res) => {
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+    }
   }
+
+  return app;
+}
+
+export async function startServer() {
+  const appConfig = validateEnvironment();
+  logger.info('SYSTEM', 'Environment configuration validated successfully.', {
+    nodeEnv: appConfig.nodeEnv,
+    isPostgres: appConfig.isPostgres,
+    requirePostgres: appConfig.requirePostgres,
+  });
+
+  // Initialize durable database and run data migrations
+  await initDatabase();
+
+  // Validate authentication secret immediately on startup
+  validateAuthSecretOnStartup();
+
+  const app = await createApp({ skipVite: false });
+  const PORT = 3000;
 
   const server = app.listen(PORT, '0.0.0.0', () => {
     logger.info('SYSTEM', `LIFE OS Server running on http://0.0.0.0:${PORT}`);
@@ -1290,6 +1299,13 @@ ${sanitizedQuestion}
 
   process.on('SIGTERM', () => handleShutdown('SIGTERM'));
   process.on('SIGINT', () => handleShutdown('SIGINT'));
+
+  return { app, server };
 }
 
-startServer();
+if (process.env.NODE_ENV !== 'test' && !process.env.LIFEOS_SKIP_AUTO_START) {
+  startServer().catch((err) => {
+    logger.error('SYSTEM', 'Fatal server startup error', { error: String(err) });
+    process.exit(1);
+  });
+}

@@ -1157,15 +1157,24 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
             throw new Error(`UNSUPPORTED_OPERATION_TYPE: ${op.type}`);
         }
 
-        if (eventId) {
-          this.cacheEvent(userId, eventId, opResult);
+        if (opResult && typeof opResult === 'object' && opResult.success === false) {
+          operationResults.push({
+            operationId: op.operationId,
+            success: false,
+            error: opResult.error || 'Operation rejected',
+          });
+          rejectedCount++;
+        } else {
+          if (eventId) {
+            this.cacheEvent(userId, eventId, opResult);
+          }
+          operationResults.push({
+            operationId: op.operationId,
+            success: true,
+            result: opResult,
+          });
+          appliedCount++;
         }
-        operationResults.push({
-          operationId: op.operationId,
-          success: true,
-          result: opResult,
-        });
-        appliedCount++;
       } catch (opErr: any) {
         operationResults.push({
           operationId: op.operationId,

@@ -5,6 +5,7 @@ console.log('LIFE OS — FULL PRE-CANARY PRODUCTION AUDIT VERIFICATION');
 console.log('======================================================================\n');
 
 const testSuites = [
+  { name: 'Production Express Route & Security Regression', cmd: 'npx tsx scripts/blocker_regression_tests.ts' },
   { name: 'Phase 2B Forensic Audit', cmd: 'npx tsx scripts/forensic_verify_phase2b.ts' },
   { name: 'Phase 2B Database Integrity', cmd: 'npx tsx scripts/verify_phase2b.ts' },
   { name: 'Phase 7 Production Acceptance', cmd: 'npx tsx -e "import(\'./src/server/tests/phase7_production_acceptance\').then(m => m.runPhase7ProductionAcceptance())"' },

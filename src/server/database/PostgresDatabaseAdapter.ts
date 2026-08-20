@@ -1023,20 +1023,29 @@ export class PostgresDatabaseAdapter implements DatabaseAdapter {
             throw new Error(`UNSUPPORTED_OPERATION_TYPE: ${op.type}`);
         }
 
-        if (eventId) {
-          const client = await this.pool.connect();
-          try {
-            await this.cacheEvent(client, userId, eventId, opResult);
-          } finally {
-            client.release();
+        if (opResult && typeof opResult === 'object' && opResult.success === false) {
+          operationResults.push({
+            operationId: op.operationId,
+            success: false,
+            error: opResult.error || 'Operation rejected',
+          });
+          rejectedCount++;
+        } else {
+          if (eventId) {
+            const client = await this.pool.connect();
+            try {
+              await this.cacheEvent(client, userId, eventId, opResult);
+            } finally {
+              client.release();
+            }
           }
+          operationResults.push({
+            operationId: op.operationId,
+            success: true,
+            result: opResult,
+          });
+          appliedCount++;
         }
-        operationResults.push({
-          operationId: op.operationId,
-          success: true,
-          result: opResult,
-        });
-        appliedCount++;
       } catch (opErr: any) {
         operationResults.push({
           operationId: op.operationId,
