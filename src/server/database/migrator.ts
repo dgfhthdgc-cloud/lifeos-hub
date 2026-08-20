@@ -15,8 +15,8 @@ export interface MigrationSummary {
   error?: string;
 }
 
-export async function migrateFromJson(adapter: DatabaseAdapter): Promise<MigrationSummary> {
-  const jsonPath = path.join(process.cwd(), '.data', 'users.json');
+export async function migrateFromJson(adapter: DatabaseAdapter, customJsonPath?: string): Promise<MigrationSummary> {
+  const jsonPath = customJsonPath || path.join(process.cwd(), '.data', 'users.json');
   const summary: MigrationSummary = {
     success: true,
     usersMigrated: 0,

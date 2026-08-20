@@ -1,6 +1,25 @@
 import { TaskItem, HabitItem, GoalItem, UserProfile, XpTransaction } from '../types';
 import { UserDatabaseState } from '../server/types';
 
+export interface SyncOperation {
+  operationId: string;
+  type:
+    | 'CREATE_TASK'
+    | 'UPDATE_TASK'
+    | 'DELETE_TASK'
+    | 'COMPLETE_TASK'
+    | 'CREATE_HABIT'
+    | 'UPDATE_HABIT'
+    | 'DELETE_HABIT'
+    | 'COMPLETE_HABIT'
+    | 'UPDATE_GOAL_PROGRESS'
+    | 'UPDATE_PROFILE_SETTINGS';
+  entityId?: string;
+  payload: any;
+  clientEventId?: string;
+  baseVersion?: number;
+}
+
 export interface QueuedMutation {
   id: string;
   clientEventId: string;
@@ -622,11 +641,13 @@ class SyncManagerEngine {
     }
   }
 
-  public async syncWithServer(changes: Partial<UserDatabaseState>): Promise<{
+  public async syncOperations(operations: SyncOperation[]): Promise<{
     success: boolean;
     conflict?: boolean;
     serverVersion?: number;
     state?: UserDatabaseState;
+    appliedCount?: number;
+    rejectedCount?: number;
   }> {
     const token = this.getAuthToken();
     if (!token) return { success: false };
@@ -642,7 +663,7 @@ class SyncManagerEngine {
         },
         body: JSON.stringify({
           baseVersion,
-          changes,
+          operations,
         }),
       });
 
@@ -665,7 +686,13 @@ class SyncManagerEngine {
       if (data.version) {
         this.setLocalVersion(data.version);
       }
-      return { success: true, state: data.state, serverVersion: data.version };
+      return {
+        success: true,
+        state: data.state,
+        serverVersion: data.version,
+        appliedCount: data.appliedCount,
+        rejectedCount: data.rejectedCount,
+      };
     } catch (err) {
       console.warn('Sync failed due to network error', err);
       return { success: false };

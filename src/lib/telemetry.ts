@@ -58,7 +58,10 @@ class ClientTelemetryTracker {
     category?: string;
     comment?: string;
   }): Promise<boolean> {
-    const token = typeof localStorage !== 'undefined' ? localStorage.getItem('auth_token') : null;
+    const token =
+      typeof localStorage !== 'undefined'
+        ? localStorage.getItem('lifeos_auth_token') || localStorage.getItem('auth_token')
+        : null;
     try {
       const response = await fetch('/api/telemetry/feedback', {
         method: 'POST',
@@ -80,7 +83,10 @@ class ClientTelemetryTracker {
     const eventsToSend = [...this.queue];
     this.queue = [];
 
-    const token = typeof localStorage !== 'undefined' ? localStorage.getItem('auth_token') : null;
+    const token =
+      typeof localStorage !== 'undefined'
+        ? localStorage.getItem('lifeos_auth_token') || localStorage.getItem('auth_token')
+        : null;
 
     try {
       await fetch('/api/telemetry/events', {

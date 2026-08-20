@@ -37,7 +37,7 @@ interface RateLimitConfig {
   windowMs: number;
   max: number;
   message?: string;
-  category?: 'AUTH' | 'AI' | 'SYNC' | 'XP' | 'GENERAL';
+  category?: 'AUTH' | 'AI' | 'SYNC' | 'XP' | 'GENERAL' | 'TELEMETRY';
 }
 
 function createRateLimiter(config: RateLimitConfig) {
@@ -168,6 +168,31 @@ async function startServer() {
     message: 'XP transaction limit reached.',
     category: 'XP',
   });
+
+  const telemetryRateLimiter = createRateLimiter({
+    windowMs: 60 * 1000, // 1 minute
+    max: 60,
+    message: 'Telemetry ingestion rate limit exceeded.',
+    category: 'TELEMETRY',
+  });
+
+  // Optional Auth Resolver (for public/optional routes like telemetry)
+  const extractOptionalUser = (req: Request): { userId: string; role?: string } | null => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return null;
+      }
+      const token = authHeader.split(' ')[1];
+      const payload = verifyAuthToken(token);
+      if (!payload || !payload.userId) {
+        return null;
+      }
+      return { userId: payload.userId, role: payload.role };
+    } catch {
+      return null;
+    }
+  };
 
   // Request Auth Guard Middleware with Session/Role Invalidation
   const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
@@ -438,25 +463,55 @@ async function startServer() {
       if (!req.body || typeof req.body !== 'object') {
         return res.status(400).json({ error: 'INVALID_PAYLOAD', message: 'Invalid sync payload.' });
       }
-      const syncResult = await db.syncUserState(req.user!.userId, req.body);
 
-      if (syncResult.conflict) {
+      // Blocker 2 Fix: Strictly require explicit operations array.
+      // Reject any legacy bulk state replacement attempts (e.g. via 'changes' or direct state fields).
+      if ('changes' in req.body || !Array.isArray(req.body.operations)) {
+        return res.status(400).json({
+          error: 'OPERATION_BASED_SYNC_REQUIRED',
+          message: 'State synchronization requires an explicit operations array. Legacy bulk state replacement is forbidden.',
+        });
+      }
+
+      const operations = req.body.operations;
+      const baseVersion = typeof req.body.baseVersion === 'number' ? req.body.baseVersion : undefined;
+
+      // Validate operation items
+      for (const op of operations) {
+        if (!op || typeof op !== 'object' || typeof op.type !== 'string' || !op.type.trim()) {
+          return res.status(400).json({
+            error: 'INVALID_OPERATION_SCHEMA',
+            message: 'Each sync operation must contain a valid operation type.',
+          });
+        }
+      }
+
+      const opResult = await db.applySyncOperations(req.user!.userId, operations, baseVersion);
+
+      if (opResult.conflict) {
         logger.warn('SYNC', `State conflict detected for user ${req.user!.userId}`, {
-          clientVersion: syncResult.clientVersion,
-          serverVersion: syncResult.serverVersion,
+          clientVersion: opResult.clientVersion,
+          serverVersion: opResult.serverVersion,
         });
         return res.status(409).json({
           error: 'STATE_CONFLICT',
           message: 'Server possesses a newer revision of state. Conflict resolution required.',
-          serverVersion: syncResult.serverVersion,
-          clientVersion: syncResult.clientVersion,
-          state: syncResult.state,
+          serverVersion: opResult.serverVersion,
+          clientVersion: opResult.clientVersion,
+          state: opResult.state,
         });
       }
 
-      res.json({ success: true, version: syncResult.serverVersion, state: syncResult.state });
+      res.json({
+        success: opResult.success,
+        version: opResult.serverVersion,
+        appliedCount: opResult.appliedCount,
+        rejectedCount: opResult.rejectedCount,
+        operationResults: opResult.operationResults,
+        state: opResult.state,
+      });
     } catch (err: any) {
-      res.status(400).json({ error: 'SYNC_STATE_FAILED', message: err?.message || 'State synchronization failed.' });
+      res.status(400).json({ error: 'SYNC_OPERATIONS_FAILED', message: err?.message || 'State synchronization failed.' });
     }
   });
 
@@ -670,34 +725,6 @@ async function startServer() {
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: 'GOAL_PROGRESS_FAILED', message: err?.message });
-    }
-  });
-
-  // -------------------------------------------------------------
-  // GAMIFICATION & AUTHORITATIVE XP LEDGER (DEPRECATED CLIENT FALLBACK)
-  // -------------------------------------------------------------
-
-  app.post('/api/gamification/award-xp', requireAuth, xpRateLimiter, async (req, res) => {
-    try {
-      const { amount, reason, category, clientEventId } = req.body;
-      if (typeof amount !== 'number' || !Number.isInteger(amount) || amount <= 0 || amount > 500) {
-        return res.status(400).json({
-          error: 'INVALID_XP_AMOUNT',
-          message: 'XP amount must be a positive integer not exceeding 500 per transaction.',
-        });
-      }
-
-      const safeReason = typeof reason === 'string' ? reason.slice(0, 100) : 'Activity completed';
-      const eventId = clientEventId || req.headers['x-client-event-id'] || undefined;
-      const result = await db.recordXpTransaction(req.user!.userId, amount, safeReason, category, eventId);
-
-      res.json({
-        success: true,
-        user: result.profile,
-        transaction: result.transaction,
-      });
-    } catch (err: any) {
-      res.status(500).json({ error: 'AWARD_XP_FAILED', message: err?.message || 'Failed to record XP transaction.' });
     }
   });
 
@@ -1015,49 +1042,88 @@ ${sanitizedQuestion}
     }
   });
 
-  app.post('/api/telemetry/events', async (req, res) => {
+  app.post('/api/telemetry/events', telemetryRateLimiter, async (req, res) => {
     try {
-      const { events } = req.body;
-      if (Array.isArray(events)) {
-        for (const evt of events) {
-          if (evt && typeof evt === 'object') {
-            const eventType = evt.type || 'api_request';
-            const userId = req.user?.userId || evt.userId || 'anonymous';
-            const payload = {
-              type: eventType,
-              userId,
-              category: evt.category,
-              durationMs: evt.durationMs,
-              statusCode: evt.statusCode,
-              route: evt.route,
-              status: evt.status,
-              metadata: evt.metadata,
-            };
+      const optionalUser = extractOptionalUser(req);
+      // Blocker 3 Fix: Telemetry user-id spoofing protection.
+      // Authenticated telemetry: userId strictly equals verified req.user.userId.
+      // Anonymous telemetry: userId strictly equals 'anonymous'.
+      // Client-supplied evt.userId is STRICTLY IGNORED in all circumstances.
+      const resolvedUserId = optionalUser ? optionalUser.userId : 'anonymous';
 
-            serverTelemetry.recordEvent(payload);
+      const { events } = req.body || {};
+      if (!Array.isArray(events)) {
+        return res.status(400).json({ error: 'INVALID_PAYLOAD', message: 'Events must be an array.' });
+      }
 
-            if (typeof db.recordTelemetryEvent === 'function') {
-              try {
-                await db.recordTelemetryEvent({
-                  id: `telem_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-                  userId,
-                  type: eventType,
-                  category: evt.category,
-                  durationMs: evt.durationMs,
-                  statusCode: evt.statusCode,
-                  route: evt.route,
-                  status: evt.status,
-                  metadata: evt.metadata,
-                  timestamp: new Date().toISOString(),
-                });
-              } catch {
-                // Non-blocking durable telemetry recording
-              }
+      // Batch size limit (maximum 50 events per batch)
+      if (events.length > 50) {
+        return res.status(400).json({ error: 'BATCH_TOO_LARGE', message: 'Maximum 50 events per batch.' });
+      }
+
+      for (const evt of events) {
+        if (!evt || typeof evt !== 'object') continue;
+
+        // Event type validation: string <= 100 chars, alphanumeric/underscore/dash/dot
+        const rawType = typeof evt.type === 'string' ? evt.type.trim() : 'api_request';
+        if (!/^[a-zA-Z0-9_.-]{1,100}$/.test(rawType)) {
+          continue;
+        }
+        const eventType = rawType;
+
+        const category = typeof evt.category === 'string' ? evt.category.slice(0, 50) : undefined;
+        const route = typeof evt.route === 'string' ? evt.route.slice(0, 200) : undefined;
+        const status = typeof evt.status === 'string' ? evt.status.slice(0, 50) : undefined;
+        const statusCode = typeof evt.statusCode === 'number' && Number.isInteger(evt.statusCode) ? evt.statusCode : undefined;
+        const durationMs = typeof evt.durationMs === 'number' && evt.durationMs >= 0 && evt.durationMs < 1000000 ? evt.durationMs : undefined;
+
+        // Metadata validation: object with max serialized length of 4096 bytes
+        let safeMetadata: any = undefined;
+        if (evt.metadata && typeof evt.metadata === 'object') {
+          try {
+            const serialized = JSON.stringify(evt.metadata);
+            if (serialized.length <= 4096) {
+              safeMetadata = evt.metadata;
             }
+          } catch {
+            safeMetadata = undefined;
+          }
+        }
+
+        const payload = {
+          type: eventType,
+          userId: resolvedUserId,
+          category,
+          durationMs,
+          statusCode,
+          route,
+          status,
+          metadata: safeMetadata,
+        };
+
+        serverTelemetry.recordEvent(payload);
+
+        if (typeof db.recordTelemetryEvent === 'function') {
+          try {
+            await db.recordTelemetryEvent({
+              id: `telem_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+              userId: resolvedUserId,
+              type: eventType,
+              category,
+              durationMs,
+              statusCode,
+              route,
+              status,
+              metadata: safeMetadata,
+              timestamp: new Date().toISOString(),
+            });
+          } catch {
+            // Non-blocking durable telemetry recording
           }
         }
       }
-      res.json({ success: true, received: Array.isArray(events) ? events.length : 0 });
+
+      res.json({ success: true, received: events.length, userId: resolvedUserId });
     } catch {
       res.status(400).json({ error: 'TELEMETRY_INGESTION_FAILED' });
     }

@@ -249,30 +249,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // In authenticated mode: Must be server-authoritative.
-    // We never trust client-provided XP locally without server validation.
-    const token = localStorage.getItem('lifeos_auth_token');
-    if (token) {
-      try {
-        const resp = await fetch('/api/gamification/award-xp', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ amount, reason }),
-        });
-        if (resp.ok) {
-          const data = await resp.json();
-          if (data.user) {
-            setUser(data.user);
-            Storage.setUser(data.user);
-          }
-        }
-      } catch {
-        console.warn('Authoritative XP award failed; arbitrary client XP was not granted.');
-      }
-    }
+    // In authenticated mode: XP is strictly server-authoritative.
+    // Client-side arbitrary XP requests are forbidden. XP updates occur via server domain mutations.
+    console.debug('Client-requested arbitrary XP ignored in authenticated mode; XP is strictly server-authoritative.');
   };
 
   return (

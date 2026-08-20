@@ -7,5 +7,16 @@ coverage/
 *.log
 .env*
 !.env.example
-.data/
+.data*/
+.backups*/
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-wal
+*.db
+*.db-journal
+*.db-wal
+*.meta.json
+*.pre_restore_*
 .*.hm
+

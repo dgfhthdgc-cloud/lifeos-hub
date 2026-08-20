@@ -233,13 +233,38 @@ async function runForensicAudit() {
   const migAdapter = new SqlDatabaseAdapter(emptyDbFile);
   await migAdapter.initialize();
 
+  // Create temporary fixture for test JSON migration
+  const testJsonFile = path.join(testDbDir, 'test_users.json');
+  fs.writeFileSync(
+    testJsonFile,
+    JSON.stringify({
+      users: {
+        'mig-user-1': {
+          id: 'mig-user-1',
+          email: 'migrated@lifeos.internal',
+          passwordHash: 'hash',
+          salt: 'salt',
+          role: 'user',
+        },
+      },
+      states: {
+        'mig-user-1': {
+          profile: { id: 'mig-user-1', name: 'Migrated User', currentXp: 100 },
+          tasks: [],
+          habits: [],
+          goals: [],
+        },
+      },
+    })
+  );
+
   // Run migration 1
-  const mig1 = await migrateFromJson(migAdapter);
+  const mig1 = await migrateFromJson(migAdapter, testJsonFile);
   assert(mig1.success, 'Migration 1 into empty database succeeds');
   assert(mig1.usersMigrated > 0, `Migration 1 imported ${mig1.usersMigrated} users`);
 
   // Run migration 2 (idempotent repeat)
-  const mig2 = await migrateFromJson(migAdapter);
+  const mig2 = await migrateFromJson(migAdapter, testJsonFile);
   assert(mig2.success, 'Migration 2 repeated on existing DB succeeds');
   assert(mig2.usersMigrated === 0, 'Migration 2 safely skipped already-migrated users (0 duplicate imports)');
 

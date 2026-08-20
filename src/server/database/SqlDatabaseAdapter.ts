@@ -1082,120 +1082,111 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
     let appliedCount = 0;
     let rejectedCount = 0;
 
-    this.db!.run('BEGIN TRANSACTION;');
-    try {
-      for (const op of operations) {
-        const eventId = op.clientEventId || op.operationId;
-        const cached = eventId ? this.getCachedEvent(userId, eventId) : null;
-        if (cached) {
-          operationResults.push({
-            operationId: op.operationId,
-            success: true,
-            result: cached,
-          });
-          appliedCount++;
-          continue;
-        }
-
-        try {
-          let opResult: any = null;
-          switch (op.type) {
-            case 'CREATE_TASK': {
-              const taskPayload = op.payload?.task || op.payload || {};
-              opResult = this.createTask(userId, taskPayload, op.clientEventId, op.baseVersion);
-              break;
-            }
-            case 'UPDATE_TASK': {
-              const taskId = op.entityId || op.payload?.taskId || op.payload?.id;
-              const updates = op.payload?.updates || op.payload || {};
-              opResult = this.updateTask(userId, taskId, updates, op.clientEventId, op.baseVersion);
-              break;
-            }
-            case 'DELETE_TASK': {
-              const taskId = op.entityId || op.payload?.taskId || op.payload?.id;
-              opResult = this.deleteTask(userId, taskId, op.clientEventId, op.baseVersion);
-              break;
-            }
-            case 'COMPLETE_TASK': {
-              const taskId = op.entityId || op.payload?.taskId || op.payload?.id;
-              opResult = this.completeTask(userId, taskId, op.clientEventId, op.baseVersion);
-              break;
-            }
-            case 'CREATE_HABIT': {
-              const habitPayload = op.payload?.habit || op.payload || {};
-              opResult = this.createHabit(userId, habitPayload, op.clientEventId, op.baseVersion);
-              break;
-            }
-            case 'UPDATE_HABIT': {
-              const habitId = op.entityId || op.payload?.habitId || op.payload?.id;
-              const updates = op.payload?.updates || op.payload || {};
-              opResult = this.updateHabit(userId, habitId, updates, op.clientEventId, op.baseVersion);
-              break;
-            }
-            case 'DELETE_HABIT': {
-              const habitId = op.entityId || op.payload?.habitId || op.payload?.id;
-              opResult = this.deleteHabit(userId, habitId, op.clientEventId, op.baseVersion);
-              break;
-            }
-            case 'COMPLETE_HABIT': {
-              const habitId = op.entityId || op.payload?.habitId || op.payload?.id;
-              const dateStr = op.payload?.date || op.payload?.dateStr;
-              opResult = this.completeHabit(userId, habitId, dateStr, op.clientEventId, op.baseVersion);
-              break;
-            }
-            case 'UPDATE_GOAL_PROGRESS': {
-              const goalId = op.entityId || op.payload?.goalId || op.payload?.id;
-              const progress = typeof op.payload?.progress === 'number' ? op.payload.progress : 0;
-              const milestoneId = op.payload?.milestoneId;
-              opResult = this.updateGoalProgress(userId, goalId, progress, milestoneId, op.clientEventId, op.baseVersion);
-              break;
-            }
-            case 'UPDATE_PROFILE_SETTINGS': {
-              const updates = op.payload || {};
-              opResult = this.updateUserProfile(userId, updates);
-              break;
-            }
-            default:
-              throw new Error(`UNSUPPORTED_OPERATION_TYPE: ${op.type}`);
-          }
-
-          if (eventId) {
-            this.cacheEvent(userId, eventId, opResult);
-          }
-          operationResults.push({
-            operationId: op.operationId,
-            success: true,
-            result: opResult,
-          });
-          appliedCount++;
-        } catch (opErr: any) {
-          operationResults.push({
-            operationId: op.operationId,
-            success: false,
-            error: opErr?.message || 'Operation failed',
-          });
-          rejectedCount++;
-        }
+    for (const op of operations) {
+      const eventId = op.clientEventId || op.operationId;
+      const cached = eventId ? this.getCachedEvent(userId, eventId) : null;
+      if (cached) {
+        operationResults.push({
+          operationId: op.operationId,
+          success: true,
+          result: cached,
+        });
+        appliedCount++;
+        continue;
       }
 
-      this.db!.run('COMMIT;');
-      this.saveToDisk();
+      try {
+        let opResult: any = null;
+        switch (op.type) {
+          case 'CREATE_TASK': {
+            const taskPayload = op.payload?.task || op.payload || {};
+            opResult = this.createTask(userId, taskPayload, op.clientEventId, op.baseVersion);
+            break;
+          }
+          case 'UPDATE_TASK': {
+            const taskId = op.entityId || op.payload?.taskId || op.payload?.id;
+            const updates = op.payload?.updates || op.payload || {};
+            opResult = this.updateTask(userId, taskId, updates, op.clientEventId, op.baseVersion);
+            break;
+          }
+          case 'DELETE_TASK': {
+            const taskId = op.entityId || op.payload?.taskId || op.payload?.id;
+            opResult = this.deleteTask(userId, taskId, op.clientEventId, op.baseVersion);
+            break;
+          }
+          case 'COMPLETE_TASK': {
+            const taskId = op.entityId || op.payload?.taskId || op.payload?.id;
+            opResult = this.completeTask(userId, taskId, op.clientEventId, op.baseVersion);
+            break;
+          }
+          case 'CREATE_HABIT': {
+            const habitPayload = op.payload?.habit || op.payload || {};
+            opResult = this.createHabit(userId, habitPayload, op.clientEventId, op.baseVersion);
+            break;
+          }
+          case 'UPDATE_HABIT': {
+            const habitId = op.entityId || op.payload?.habitId || op.payload?.id;
+            const updates = op.payload?.updates || op.payload || {};
+            opResult = this.updateHabit(userId, habitId, updates, op.clientEventId, op.baseVersion);
+            break;
+          }
+          case 'DELETE_HABIT': {
+            const habitId = op.entityId || op.payload?.habitId || op.payload?.id;
+            opResult = this.deleteHabit(userId, habitId, op.clientEventId, op.baseVersion);
+            break;
+          }
+          case 'COMPLETE_HABIT': {
+            const habitId = op.entityId || op.payload?.habitId || op.payload?.id;
+            const dateStr = op.payload?.date || op.payload?.dateStr;
+            opResult = this.completeHabit(userId, habitId, dateStr, op.clientEventId, op.baseVersion);
+            break;
+          }
+          case 'UPDATE_GOAL_PROGRESS': {
+            const goalId = op.entityId || op.payload?.goalId || op.payload?.id;
+            const progress = typeof op.payload?.progress === 'number' ? op.payload.progress : 0;
+            const milestoneId = op.payload?.milestoneId;
+            opResult = this.updateGoalProgress(userId, goalId, progress, milestoneId, op.clientEventId, op.baseVersion);
+            break;
+          }
+          case 'UPDATE_PROFILE_SETTINGS': {
+            const updates = op.payload || {};
+            opResult = this.updateUserProfile(userId, updates);
+            break;
+          }
+          default:
+            throw new Error(`UNSUPPORTED_OPERATION_TYPE: ${op.type}`);
+        }
 
-      const finalState = this.getUserState(userId);
-      return {
-        success: rejectedCount === 0,
-        conflict: false,
-        serverVersion: finalState.version,
-        clientVersion: baseVersion,
-        appliedCount,
-        rejectedCount,
-        operationResults,
-        state: finalState,
-      };
-    } catch (txErr) {
-      this.db!.run('ROLLBACK;');
-      throw txErr;
+        if (eventId) {
+          this.cacheEvent(userId, eventId, opResult);
+        }
+        operationResults.push({
+          operationId: op.operationId,
+          success: true,
+          result: opResult,
+        });
+        appliedCount++;
+      } catch (opErr: any) {
+        operationResults.push({
+          operationId: op.operationId,
+          success: false,
+          error: opErr?.message || 'Operation failed',
+        });
+        rejectedCount++;
+      }
     }
+
+    const finalState = this.getUserState(userId);
+    return {
+      success: rejectedCount === 0,
+      conflict: false,
+      serverVersion: finalState.version,
+      clientVersion: baseVersion,
+      appliedCount,
+      rejectedCount,
+      operationResults,
+      state: finalState,
+    };
   }
 
   public syncUserState(
@@ -1241,6 +1232,86 @@ export class SqlDatabaseAdapter implements DatabaseAdapter {
           `UPDATE user_profiles SET name = ?, title = ?, avatar_url = ?, settings_json = ? WHERE user_id = ?`,
           [name, title, avatarUrl || null, JSON.stringify(settings || {}), userId]
         );
+      }
+
+      if (Array.isArray(payload.goals)) {
+        for (const g of payload.goals) {
+          if (!g || !g.id) continue;
+          this.db!.run(
+            `INSERT OR REPLACE INTO goals (id, user_id, title, description, category, progress, xp_reward, milestones_json, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              g.id,
+              userId,
+              String(g.title || 'Goal').slice(0, 150),
+              String(g.description || '').slice(0, 500),
+              String(g.category || 'Career & Skills').slice(0, 50),
+              typeof g.progress === 'number' ? Math.max(0, Math.min(100, Math.floor(g.progress))) : 0,
+              typeof g.xpReward === 'number' ? Math.max(0, Math.min(5000, g.xpReward)) : 500,
+              JSON.stringify(Array.isArray(g.milestones) ? g.milestones : []),
+              g.createdAt || new Date().toISOString(),
+            ]
+          );
+        }
+      }
+
+      if (Array.isArray(payload.tasks)) {
+        for (const t of payload.tasks) {
+          if (!t || !t.id) continue;
+          this.db!.run(
+            `INSERT OR REPLACE INTO tasks (
+              id, user_id, title, description, due_date, time, end_time,
+              priority, status, category, tags_json, goal_id, milestone_id, xp, completed, completed_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              t.id,
+              userId,
+              String(t.title || 'Task').slice(0, 150),
+              String(t.description || '').slice(0, 500),
+              String(t.dueDate || new Date().toISOString().split('T')[0]).slice(0, 20),
+              String(t.time || '09:00 AM').slice(0, 20),
+              t.endTime || null,
+              t.priority === 'high' || t.priority === 'low' ? t.priority : 'medium',
+              t.status || (t.completed ? 'completed' : 'todo'),
+              String(t.category || 'Engineering').slice(0, 50),
+              JSON.stringify(Array.isArray(t.tags) ? t.tags : []),
+              t.goalId || null,
+              t.milestoneId || null,
+              typeof t.xp === 'number' ? Math.max(10, Math.min(300, t.xp)) : 50,
+              t.completed ? 1 : 0,
+              t.completedAt || null,
+              t.createdAt || new Date().toISOString(),
+            ]
+          );
+        }
+      }
+
+      if (Array.isArray(payload.habits)) {
+        for (const h of payload.habits) {
+          if (!h || !h.id) continue;
+          this.db!.run(
+            `INSERT OR REPLACE INTO habits (
+              id, user_id, name, description, frequency, target, category, difficulty,
+              xp, current_streak, best_streak, history_json, completed_today, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              h.id,
+              userId,
+              String(h.name || 'Habit').slice(0, 150),
+              String(h.description || '').slice(0, 500),
+              h.frequency || 'daily',
+              h.target || null,
+              String(h.category || 'Skill').slice(0, 50),
+              h.difficulty || 'medium',
+              typeof h.xpReward === 'number' ? h.xpReward : (typeof h.xp === 'number' ? h.xp : 35),
+              typeof h.currentStreak === 'number' ? h.currentStreak : 0,
+              typeof h.bestStreak === 'number' ? h.bestStreak : 0,
+              JSON.stringify(Array.isArray(h.history) ? h.history : []),
+              h.completedToday ? 1 : 0,
+              h.createdAt || new Date().toISOString(),
+            ]
+          );
+        }
       }
 
       const newVersion = currentState.version + 1;
