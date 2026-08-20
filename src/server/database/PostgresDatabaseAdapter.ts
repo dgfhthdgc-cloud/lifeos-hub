@@ -1949,7 +1949,7 @@ export class PostgresDatabaseAdapter implements DatabaseAdapter {
       const milestone = milestones.find((m) => m.id === milestoneId);
       if (milestone && !milestone.completed) {
         milestone.completed = true;
-        totalXpAwarded += milestone.xpReward || 150;
+        totalXpAwarded += milestone.xpReward ?? milestone.xp ?? 150;
         rewardReason = `Completed Goal Milestone: ${milestone.title}`;
       }
     }

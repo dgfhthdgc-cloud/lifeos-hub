@@ -66,7 +66,7 @@ export async function initDatabase(): Promise<DatabaseAdapter> {
         sanitizedUrl: sanitizeDatabaseUrl(dbUrl),
       });
 
-      if (requirePostgres || (isProduction && process.env.ALLOW_SQLITE_FALLBACK !== 'true')) {
+      if (requirePostgres || isMultiInstance || (isProduction && process.env.ALLOW_SQLITE_FALLBACK !== 'true')) {
         throw new Error(
           'FATAL DATABASE ERROR: PostgreSQL connection failed and SQLite fallback is disallowed in this configuration.'
         );
